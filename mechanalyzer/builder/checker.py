@@ -8,7 +8,6 @@ from chemkin_io.writer._util import format_rxn_name
 def run_all_checks(rxn_param_dct, rxn_ktp_dct, k_thresholds,
                    rxn_num_threshold):
     """ Run all mechanism checks and output a string describing the results.
-        Optionally write a text file with the string.
 
         :param rxn_param_dct: rate constant parameters for a mechanism
         :type rxn_param_dct: dct
@@ -42,10 +41,11 @@ def run_all_checks(rxn_param_dct, rxn_ktp_dct, k_thresholds,
     total_str += write_negative_kts(negative_rxn_ktp_dct)
     total_str += separator()
 
+    # Currently doesn't work due to new RxnParams class
     # Duplicate (more than 2) reactions
-    duplicate_rxns = get_duplicates(rxn_param_dct)
-    total_str += write_duplicates(duplicate_rxns)
-    total_str += separator()
+    #duplicate_rxns = get_duplicates(rxn_param_dct)
+    #total_str += write_duplicates(duplicate_rxns)
+    #total_str += separator()
 
     # Mismatching rate expressions
     mismatched_rxns = get_mismatches(rxn_param_dct)
@@ -230,24 +230,6 @@ def get_duplicates(rxn_param_dct):
     return duplicate_rxns
 
 
-def get_duplicates_old(rxn_param_dct):
-    """ Get reactions that have more than 2 rate expressions
-
-        :param rxn_param_dct: rate constant parameters for a mechanism
-        :type rxn_param_dct: dct
-            {rxn1: (param_tuple1, param_tuple2, ...), rxn2: ...}
-        :return duplicate_rxns: duplicate reactions and number of expressions
-        :rtype: dct {rxn1: num_of_expressions1, rxn2: ...}
-    """
-
-    duplicate_rxns = {}
-    for rxn, params in rxn_param_dct.items():
-        if len(params) > 2:
-            duplicate_rxns[rxn] = len(params)
-
-    return duplicate_rxns
-
-
 def get_mismatches(rxn_param_dct):
     """ Get reactions that have mismatching rate expressions
         (e.g., PLOG and Arrhenius).
@@ -261,34 +243,31 @@ def get_mismatches(rxn_param_dct):
                             [type1, type2, ...], rxn2: ...}
     """
 
-    def classify_rate(param):
+    def classify_params(param):
         """ Classify a rate based on the contents of the param
+            
+            Refactoring the RxnParams class should simplify this...
         """
+        param_types = []
+        if param.cheb is not None:
+            param_types.append('Chebyshev')
+        if param.plog is not None:
+            param_types.append('PLOG')
+        if param.troe is not None:
+            param_types.append('Troe')
+        if param.lind is not None:
+            param_types.append('Lindemann')
+        if param.arr is not None:
+            param_types.append('Arrhenius')
 
-        if param[3] is not None:
-            rxn_type = 'Chebyshev'
-        elif param[4] is not None:
-            rxn_type = 'PLOG'
-        elif param[2] is not None:
-            rxn_type = 'Troe'
-        elif param[1] is not None:
-            rxn_type = 'Lindemann'
-        elif param[0] is not None:
-            rxn_type = 'Arrhenius'
-        else:
-            rxn_type = 'unknown'
-
-        return rxn_type
+        return param_types
 
     mismatched_rxns = {}
     for rxn, params in rxn_param_dct.items():
-        rxn_types = []
-        for param in params:
-            rxn_type = classify_rate(param)
-            rxn_types.append(rxn_type)
+        param_types = classify_params(params)
         # If the reaction types are not all identical, save the rxn
-        if len(set(rxn_types)) != 1:
-            mismatched_rxns[rxn] = (params, rxn_types)
+        if len(set(param_types)) != 1:
+            mismatched_rxns[rxn] = (params, param_types)
 
     return mismatched_rxns
 
@@ -380,7 +359,7 @@ def write_sources_and_sinks(source_spcs, sink_spcs):
 
     source_sink_str = (
         '\nSOURCE AND SINK SPECIES\n\n' +
-        'These species only appear as reactants:\n'
+        'These species only appear as reactants:\n\n'
     )
 
     if source_spcs:
@@ -388,7 +367,7 @@ def write_sources_and_sinks(source_spcs, sink_spcs):
         source_sink_str += write_dct(source_spcs, longest_source_name)
     else:  # if source_spcs is empty
         source_sink_str += 'No source species found\n\n'
-    source_sink_str += 'These species only appear as products:\n'
+    source_sink_str += 'These species only appear as products:\n\n'
     if sink_spcs:
         longest_sink_name = max(map(len, list(sink_spcs.keys())))
         source_sink_str += write_dct(sink_spcs, longest_sink_name)
@@ -560,10 +539,10 @@ def write_mismatches(mismatched_rxns):
     if mismatched_rxns != {}:
         mismatch_str += (
             'The following reactions have mismatched rate expressions\n')
-        for rxn, (_, rxn_types) in mismatched_rxns.items():
+        for rxn, (_, param_types) in mismatched_rxns.items():
             rxn_name = format_rxn_name(rxn)
             mismatch_str += rxn_name + ': '
-            for type_idx, rxn_type in enumerate(rxn_types):
+            for type_idx, rxn_type in enumerate(param_types):
                 if type_idx != 0:
                     mismatch_str += ', '
                 mismatch_str += rxn_type

@@ -12,11 +12,12 @@ import copy
 import csv
 import pandas as pd
 import automol
+from automol.form import string
 from autorun import timeout, execute_function_in_parallel
 import ioformat.pathtools as text_parser
 import thermfit
 from mechanalyzer.parser.csv_ import csv_dct
-
+from mechanalyzer.parser.new_spc import fct_grp_tostr
 
 # LIST SETTING THE STANDARD ORDER OF HEADERS
 STD_HEADERS = (
@@ -52,7 +53,15 @@ def csv_string(spc_dct, headers):
     for name, dct in spc_dct.items():
         _csv_dct[name] = {}
         for header in headers:
-            _csv_dct[name][header] = dct.get(header, None)
+            #  if dictionaries are found: turn them into strings (example: fml, fct_grp_dct)
+            val = dct.get(header, None)
+            if isinstance(val, dict):
+                if header == 'fml':
+                    val = string(val)
+                elif header == 'fct_grp':
+                    val = fct_grp_tostr(val)
+            _csv_dct[name][header] = val
+            
 
     # Build the datagrame and resultant CSV string
     dframe = pd.DataFrame.from_dict(_csv_dct, orient='index')
@@ -65,7 +74,7 @@ def csv_string(spc_dct, headers):
 
 
 # headers function i will probably move inside the function above
-def csv_headers(spc_dct):
+def csv_headers(spc_dct, include_missing=False):
     """ Determine what the headers should be for writing a csv string dct
     """
 
@@ -80,7 +89,7 @@ def csv_headers(spc_dct):
 
     # Sort the headers by the standard list
     headers = automol.util.sort_by_list(
-        headers, STD_HEADERS, include_missing=False)
+        headers, STD_HEADERS, include_missing=include_missing)
 
     return headers
 
@@ -120,32 +129,6 @@ def build_spc_dct(spc_str, spc_type):
     return spc_dct
 
 
-# Build a spc dct from constituent information
-def spc_dct_from_smiles(smiles_lst, stereo=False):
-    """ Build a spc dct from a set of smiles
-    """
-
-    # Initialize empty formula dct
-    fml_count_dct = {}
-
-    spc_dct = {}
-    for smi in smiles_lst:
-        # Generate InChI string and formula
-        ich = automol.smiles.inchi(smi)
-        if stereo:
-            ich = automol.inchi.add_stereo(ich)
-
-        # Generate Name
-        fml = automol.inchi.formula_string(ich)
-        name, fml_count_dct = assign_unique_name(
-            fml, fml_count_dct, spc_dct)
-
-        # Add species dictionary
-        spc_dct.update({name: thermfit.create_spec(ich)})
-
-    return spc_dct
-
-
 # Modify an existing spc_dct
 def reorder_by_atomcount(spc_dct):
     """ Returns a species dictionary ordered by increasing N of atoms
@@ -155,8 +138,8 @@ def reorder_by_atomcount(spc_dct):
     natom_df = pd.Series(index=list(spc_dct.keys()))
     for key in spc_dct.keys():
         ich = spc_dct[key]['inchi']
-        fml_dct = automol.inchi.formula(ich)
-        natoms = automol.formula.atom_count(fml_dct)
+        fml_dct = automol.chi.formula(ich)
+        natoms = automol.form.atom_count(fml_dct)
         natom_df[key] = natoms
     natom_df = natom_df.sort_values(ascending=True)
 
@@ -189,7 +172,7 @@ def add_heat_of_formation_basis(spc_dct,
         """
         new_dct = {}
         for dct in cbh_ref_dct.values():
-            tempn_smiles = automol.inchi.smiles(dct['inchi'])
+            tempn_smiles = automol.chi.smiles(dct['inchi'])
             if tempn_smiles not in cbh_smiles:
                 # Add to new dictionry
                 tempn = ref_scheme + '_' + tempn_smiles
@@ -240,7 +223,7 @@ def add_instability_products(mech_spc_dct, nprocs='auto', stereo=True):
         for ich in all_instab_ichs:
             _name = _ich_name_dct.get(ich)
             if _name is None:
-                _name = f'instab_{automol.inchi.smiles(ich)}'
+                _name = f'instab_{automol.chi.smiles(ich)}'
                 mech_spc_dct[_name] = thermfit.create_spec(ich)
                 print(f'{_name} = {ich} being added to species dictonary')
             else:
@@ -249,7 +232,8 @@ def add_instability_products(mech_spc_dct, nprocs='auto', stereo=True):
     return mech_spc_dct
 
 
-def stereochemical_spc_dct(spc_dct, nprocs='auto', all_stereo=False):
+def stereochemical_spc_dct(
+        spc_dct, nprocs='auto', all_stereo=False, enant=True):
     """ read the species file in a .csv format and write a new one
         that has stero information
     """
@@ -258,7 +242,7 @@ def stereochemical_spc_dct(spc_dct, nprocs='auto', all_stereo=False):
     init_names = list(spc_dct.keys())
 
     # Add stereo using multiple processes
-    args = (spc_dct, all_stereo)
+    args = (spc_dct, all_stereo, enant)
     ste_dcts = execute_function_in_parallel(
         _add_stereo_to_dct, init_names, args, nprocs=nprocs)
 
@@ -275,7 +259,7 @@ def stereochemical_spc_dct(spc_dct, nprocs='auto', all_stereo=False):
     return ste_spc_dct_ord
 
 
-def _add_stereo_to_dct(init_dct, all_stereo, names, output_queue):
+def _add_stereo_to_dct(init_dct, all_stereo, enant, names, output_queue):
     """ Builds a modified species dictionary for a set of names where
         each sub species dictionary contains an InChI string with
         stereochemical layers being added.
@@ -291,7 +275,7 @@ def _add_stereo_to_dct(init_dct, all_stereo, names, output_queue):
     #     """
     #     try:
     #         nrings = len(automol.graph.rings(
-    #             automol.inchi.graph(dct['inchi'])))
+    #             automol.chi.graph(dct['inchi'])))
     #     except:
     #         print('Cannot produce graph for {} '.format(name))
     #         nrings = 2000
@@ -303,17 +287,32 @@ def _add_stereo_to_dct(init_dct, all_stereo, names, output_queue):
         """
         ret_ichs, worked = [ich], True
         # print('inchi test:', name, ich)
-        # print('complete inchi test:', automol.inchi.is_complete(ich))
-        # print('add_stereo  inchi test:', automol.inchi.add_stereo(ich))
-        # print('expand_stereo inchi test:', automol.inchi.expand_stereo(ich))
-        try:
-            if not automol.inchi.is_complete(ich):
-                ret_ichs = (
-                    [automol.inchi.add_stereo(ich)] if not all_stereo else
-                    automol.inchi.expand_stereo(ich))
-        except:  # noqa: E722
-            print(f'{name} timed out in stereo generation')
-            worked = False
+        # print('complete inchi test:', automol.chi.is_complete(ich))
+        # print('add_stereo  inchi test:', automol.chi.add_stereo(ich))
+        # print('expand_stereo inchi test:', automol.chi.expand_stereo(ich))
+        if all_stereo:
+            try:
+                if not automol.chi.is_complete(ich):
+                    ret_ichs = (
+                         automol.chi.expand_stereo(ich, enant=enant))
+            except:  # noqa: E722
+                print(f'{name} timed out in stereo generation')
+                worked = False
+        else: 
+            try:
+                if not automol.chi.is_complete(ich):
+                    ret_ichs = (
+                        [automol.chi.add_stereo(ich)])
+            except:  # noqa: E722
+                ich_attempt = automol.chi.expand_stereo(ich, enant=enant)
+                if len(ich_attempt) > 0:
+                    ret_ichs = [ich_attempt[0]]
+                else:   
+                    worked = False
+        # Loop over strings and convert stereo inchi to amchi, if needed
+        # may not work perfectly since you rely on the inchi code
+        ret_ichs = [automol.chi.inchi_to_amchi(ich) for ich in ret_ichs]
+        
         return ret_ichs, worked
 
     # Assess the species the code is able to add stereochemistry to
@@ -350,7 +349,7 @@ def _add_stereo_to_dct(init_dct, all_stereo, names, output_queue):
             sname = name+f'({str(idx+1)})' if idx != 0 else name
             new_dct[sname] = {
                 'inchi': ste_ich,
-                'inchikey': automol.inchi.inchi_key(ste_ich)
+                'inchikey': automol.chi.inchi_key(ste_ich)
             }
             for key in spc_dct_keys:
                 new_dct[sname][key] = init_dct[name][key]
@@ -379,18 +378,7 @@ def add_hashkey(spc_dct):
 
     for dct in spc_dct.values():
         ich = dct.get('inchi')
-        ick = automol.inchi.inchi_key(ich) if ich is not None else None
+        ick = automol.chi.inchi_key(ich) if ich is not None else None
         dct.update({'inchikey': ick})
 
     return spc_dct
-
-
-if __name__ == '__main__':
-    print('ich1')
-    ICH = 'InChI=1S/C4H8O/c1-3-4(2)5-3/h3-4H,1-2H3/t3-,4-/m0/s1'
-    NAME = stereo_name_suffix(ICH)
-    print(NAME)
-    print('\nich2')
-    ICH = 'InChI=1S/C4H7O2/c1-3(5)4(2)6/h5H,1-2H3/b4-3+'
-    NAME = stereo_name_suffix(ICH)
-    print(NAME)

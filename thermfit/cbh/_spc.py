@@ -3,9 +3,9 @@
 """
 
 import numpy
-import automol.inchi
+import automol.chi
 import automol.graph
-import automol.formula
+import automol.form
 from thermfit.cbh import _util as util
 
 
@@ -48,7 +48,7 @@ def basic_spc_basis(ich):
     """
 
     # Get a list of all the atom types in the molecule
-    fml = automol.inchi.formula(ich)
+    fml = automol.chi.formula(ich)
     symbs = tuple(fml.keys())
 
     # Create list of inchi keys corresponding to basis species
@@ -99,16 +99,16 @@ def _coefficients(basis, spc_fml):
     basis_mat = numpy.zeros((nbasis, nbasis))
 
     # Get the basis formulae list
-    basis_fml_str = [automol.inchi.formula_string(spc) for spc in basis]
+    basis_fml_str = [automol.chi.formula_layer(spc) for spc in basis]
     for spc in basis_fml_str:
-        basis_atom_dict = automol.formula.from_string(spc)
+        basis_atom_dict = automol.form.from_string(spc)
         for atom in basis_atom_dict:
             if atom not in spc_fml:
                 spc_fml[atom] = 0
 
     # Set the elements of the matrix
     for i, spc in enumerate(basis_fml_str):
-        basis_atom_dict = automol.formula.from_string(spc)
+        basis_atom_dict = automol.form.from_string(spc)
         basis_vals = []
         for key in spc_fml.keys():
             if key in basis_atom_dict:
@@ -144,34 +144,45 @@ def cbhzed(ich, balance=True):
     """
 
     # Graphical info about molecule
-    gra = automol.inchi.graph(ich)
-    rad_atms = list(automol.graph.sing_res_dom_radical_atom_keys(gra))
-    atm_vals = automol.graph.atom_element_valences(gra)
+    gra = automol.chi.graph(ich)
     atms = automol.graph.atoms(gra)
     adj_atms = automol.graph.atoms_neighbor_atom_keys(gra)
+    term_atms = automol.graph.terminal_atom_keys(gra)
+
+    kek_bnd_ords = automol.graph.kekules_bond_orders(gra)
+    norm_kek = 1 / len(kek_bnd_ords)
 
     # Determine CBHzed fragments
     frags = {}
-    for atm in atm_vals:
-        coeff = 1
-        if not balance:
-            coeff = (
-                util.branch_point(adj_atms[atm]) *
-                util.terminal_moiety(adj_atms[atm])
-            )
-        if atm in rad_atms:
-            atm_vals[atm] -= 1
-        atm_dic = {0: (atms[atm][0], int(atm_vals[atm]), None)}
-        gra = (atm_dic, {})
-        frag = automol.graph.inchi(gra)
-        util.add2dic(frags, frag, coeff)
-
+    for bnd_ords in kek_bnd_ords:
+        for atm in atms:
+            grai = (
+                atms.copy(),
+                {key: (val, None) for (key, val) in bnd_ords.copy().items()},)
+            if (atms[atm][0] == 'H' and len(atms) > 1):
+                continue
+            coeff = 1.0
+            if not balance:
+                coeff = (
+                    util.branch_point(adj_atms[atm]) *
+                    (atm not in term_atms)
+                )
+            extended_site = [atm]
+            for site_atm in extended_site:
+                for atm_x in adj_atms[site_atm]:
+                    if atm_x not in extended_site and atms[atm_x][0] != 'H':
+                        grai = util.cleave_group_and_saturate(
+                            grai, bnd_ords, site_atm, atm_x)
+            frag = automol.graph.chi(grai)
+            util.add2dic(frags, frag, val=coeff*norm_kek)
+    frags = {k: round(v, 6) for k, v in frags.items() if v}
     if balance:
         balance_ = util.balance(ich, frags)
         balance_ = {k: v for k, v in balance_.items() if v}
         if balance_:
             frags = util.balance_frags(ich, frags)
-
+    frags = {
+        k: round(v, 6) for k, v in frags.items() if abs(round(v, 6)) != 0.0}
     return frags
 
 
@@ -186,35 +197,34 @@ def cbhone(ich, balance=True):
     """
 
     # Graphical info about molecule
-    gra = automol.inchi.graph(ich)
+    gra = automol.chi.graph(ich)
     atms = automol.graph.atoms(gra)
-    bnd_ords = automol.graph.one_resonance_dominant_bond_orders(gra)
-    rad_atms = list(automol.graph.sing_res_dom_radical_atom_keys(gra))
-    atm_vals = automol.graph.atom_element_valences(gra)
     adj_atms = automol.graph.atoms_neighbor_atom_keys(gra)
+
+    kek_bnd_ords = automol.graph.kekules_bond_orders(gra)
+    norm_kek = 1 / len(kek_bnd_ords)
 
     # Determine CBHone fragments
     frags = {}
-    for atm in atm_vals:
-        for adj in list(adj_atms[atm]):
-            if atm > adj:
-                vali = atm_vals[atm]
-                valj = atm_vals[adj]
-                if atm in rad_atms:
-                    vali -= 1
-                if adj in rad_atms:
-                    valj -= 1
-                key = frozenset({atm, adj})
-                bnd_ord = list(bnd_ords[key])[0]
-                vali -= bnd_ord
-                valj -= bnd_ord
-                atm_dic = {0: (atms[atm][0], int(vali), None),
-                           1: (atms[adj][0], int(valj), None)}
-                bnd_dic = {frozenset({0, 1}): (1, None)}
-                gra = (atm_dic, bnd_dic)
-                frag = automol.graph.inchi(gra)
-                util.add2dic(frags, frag)
-    frags = {k: v for k, v in frags.items() if v}
+    for bnd_ords in kek_bnd_ords:
+        for bnd in bnd_ords:
+            atma, atmb = bnd
+            grai = (
+                atms.copy(),
+                {key: (val, None) for (key, val) in bnd_ords.copy().items()},)
+            if (atms[atma][0] == 'H' or atms[atmb][0] == 'H'):
+                continue
+            coeff = 1.0
+            extended_site = [atma, atmb]
+            for site_atm in extended_site:
+                for atm_x in adj_atms[site_atm]:
+                    if atm_x not in extended_site and atms[atm_x][0] != 'H':
+                        grai = util.cleave_group_and_saturate(
+                            grai, bnd_ords, site_atm, atm_x)
+            grai = automol.graph.explicit(grai)
+            frag = automol.graph.chi(grai)
+            util.add2dic(frags, frag, val=coeff*norm_kek)
+    frags = {k: round(v, 6) for k, v in frags.items() if v}
     if not frags:
         frags = cbhzed(ich)
     # Balance
@@ -227,10 +237,13 @@ def cbhone(ich, balance=True):
             for frag in zedfrags:
                 util.add2dic(newfrags, frag, -zedfrags[frag])
             frags = {k: v for k, v in newfrags.items() if v}
-        balance_ = util.balance(ich, frags)
-        balance_ = {k: v for k, v in balance_.items() if v}
-        if balance_:
-            frags = util.balance_frags(ich, frags)
+            balance_ = util.balance(ich, frags)
+            balance_ = {k: v for k, v in balance_.items() if v}
+            assert all([v == 0 for v in balance_.values()]), \
+                f"CBH0 fails to balance CBH1 for {ich} -- " + ",".join([f'{k}:{v}' for k, v in balance_.items()])
+
+    frags = {
+        k: round(v, 6) for k, v in frags.items() if abs(round(v, 6)) != 0.0}
     return frags
 
 
@@ -245,51 +258,44 @@ def cbhtwo(ich, balance=True):
     """
 
     # Graphical info about molecule
-    gra = automol.inchi.graph(ich)
+    gra = automol.chi.graph(ich)
     atms = automol.graph.atoms(gra)
-    bnd_ords = automol.graph.one_resonance_dominant_bond_orders(gra)
-    rad_atms = list(automol.graph.sing_res_dom_radical_atom_keys(gra))
-    atm_vals = automol.graph.atom_element_valences(gra)
     adj_atms = automol.graph.atoms_neighbor_atom_keys(gra)
+    term_atms = automol.graph.terminal_atom_keys(gra)
+
+    kek_bnd_ords = automol.graph.kekules_bond_orders(gra)
+    norm_kek = 1 / len(kek_bnd_ords)
 
     # Determine CBHtwo fragments
     frags = {}
-    for atm in atms:
-        vali = atm_vals[atm]
-        if atm in rad_atms:
-            vali -= 1
-        # First loop over all atoms of this frag to get saturation of atomi
-        for adj in list(adj_atms[atm]):
-            key = frozenset({atm, adj})
-            bnd_ord = list(bnd_ords[key])[0]
-            vali -= bnd_ord
-        atm_dic = {0: (atms[atm][0], int(vali), None)}
-        bnd_dic = {}
-        # Then start adding bonds to the bnddic and atomdic
-        j = 0
-        coeff = 1
-        if not balance:
-            coeff = (
-                util.branch_point(adj_atms[atm]) *
-                util.terminal_moiety(adj_atms[atm])
-            )
-        for adj in list(adj_atms[atm]):
-            j += 1
-            valj = atm_vals[adj]
-            if adj in rad_atms:
-                valj -= 1
-            key = frozenset({atm, adj})
-            bnd_ord = list(bnd_ords[key])[0]
-            valj -= bnd_ord
-            atm_dic[j] = (atms[adj][0], int(valj), None)
-            bnd_dic[frozenset({0, j})] = (1, None)
-        gra = (atm_dic, bnd_dic)
-        frag = automol.graph.inchi(gra)
-        util.add2dic(frags, frag, coeff)
+    for bnd_ords in kek_bnd_ords:
+        for atm in atms:
+            grai = (
+                atms.copy(),
+                {key: (val, None) for (key, val) in bnd_ords.copy().items()},)
+            if (atms[atm][0] == 'H'):
+                continue
+            coeff = 1.0
+            if not balance:
+                coeff = (
+                    util.branch_point(adj_atms[atm]) *
+                    (atm not in term_atms) 
+                )
+            extended_site = [atm] + list(adj_atms[atm])
+            #for site_atm in extended_site:
+            for site_atm in list(adj_atms[atm]):
+                for atm_x in adj_atms[site_atm]:
+                    if atm_x != atm and atms[atm_x][0] != 'H':
+                        grai = util.cleave_group_and_saturate(
+                            grai, bnd_ords, site_atm, atm_x)
 
-    frags = {k: v for k, v in frags.items() if v}
+            frag = automol.graph.chi(grai)
+            util.add2dic(frags, frag, val=coeff*norm_kek)
+
+    frags = {k: round(v, 6) for k, v in frags.items() if v}
     if not frags:
-        frags = cbhone(frags)
+        frags = cbhone(ich)
+
     # Balance
     if balance:
         balance_ = util.balance(ich, frags)
@@ -299,20 +305,13 @@ def cbhtwo(ich, balance=True):
             onefrags = cbhone(ich, balance=False)
             for frag in onefrags:
                 util.add2dic(newfrags, frag, -onefrags[frag])
-            frags = {k: v for k, v in newfrags.items() if v}
+            frags = {k: round(v, 6) for k, v in newfrags.items() if v}
             balance_ = util.balance(ich, frags)
             balance_ = {k: v for k, v in balance_.items() if v}
-            if balance_:
-                newfrags = frags.copy()
-                zedfrags = cbhzed(ich, balance=False)
-                for frag in zedfrags:
-                    util.add2dic(newfrags, frag, zedfrags[frag])
-                frags = {k: v for k, v in newfrags.items() if v}
-                balance_ = util.balance(ich, frags)
-                balance_ = {k: v for k, v in balance_.items() if v}
-                if balance_:
-                    frags = util.balance_frags(ich, frags)
-
+            assert all([v == 0 for v in balance_.values()]), \
+                "CBH1 fails to balance CBH2 -- " + ",".join([f'{k}:{v}' for k, v in balance_.items()])
+    frags = {
+        k: round(v, 6) for k, v in frags.items() if abs(round(v, 6)) != 0.0}
     return frags
 
 
@@ -330,45 +329,34 @@ def cbhthree(ich, balance=True):
     """
 
     # Graphical info about molecule
-    gra = automol.inchi.graph(ich)
+    gra = automol.chi.graph(ich)
     atms = automol.graph.atoms(gra)
-    bnd_ords = automol.graph.one_resonance_dominant_bond_orders(gra)
-    rad_atms = list(automol.graph.sing_res_dom_radical_atom_keys(gra))
-    atm_vals = automol.graph.atom_element_valences(gra)
+    bnd_ords = automol.graph.kekule_bond_orders(gra)
     adj_atms = automol.graph.atoms_neighbor_atom_keys(gra)
 
     # Determine CBHfour fragments
     frags = {}
 
-    for bnd in list(bnd_ords):
-        atm_dic = {}
-        bnd_dic = {}
-        bnd_dic[frozenset({0, 1})] = (list(bnd_ords[bnd])[0], None)
-        for i, atm in enumerate(list(bnd)):
-            vali = atm_vals[atm]
-            if atm in rad_atms:
-                vali -= 1
-            for adj in list(adj_atms[atm]):
-                key = frozenset({atm, adj})
-                bnd_ord = list(bnd_ords[key])[0]
-                vali -= bnd_ord
-            atm_dic[i] = (atms[atm][0], int(vali), None)
-            for j, adj in enumerate(list(adj_atms[atm]), start=1):
-                if adj not in list(bnd):
-                    valj = atm_vals[adj]
-                    if adj in rad_atms:
-                        valj -= 1
-                    key = frozenset({atm, adj})
-                    bnd_ord = list(bnd_ords[key])[0]
-                    valj -= bnd_ord
-                    atm_dic[i*4+j+1] = (atms[adj][0], int(valj), None)
-                    bnd_dic[frozenset({i, i*4+j+1})] = (bnd_ord, None)
-        gra = (atm_dic, bnd_dic)
-        frag = automol.graph.inchi(gra)
-        util.add2dic(frags, frag)
-
+    for bnd in bnd_ords:
+        atma, atmb = bnd
+        grai = (
+            atms.copy(),
+            {key: (val, None) for (key, val) in bnd_ords.copy().items()},)
+        if (atms[atma][0] == 'H' or atms[atmb][0] == 'H'):
+            continue
+        coeff = 1.0
+        extended_site = [atma, atmb] + list(adj_atms[atma]) + list(adj_atms[atmb])
+        for site_atm in extended_site:
+            for atm_x in adj_atms[site_atm]:
+                if atm_x not in extended_site and atms[atm_x][0] != 'H':
+                    grai = util.cleave_group_and_saturate(
+                        grai, bnd_ords, site_atm, atm_x)
+        grai = automol.graph.explicit(grai)
+        frag = automol.graph.chi(grai)
+        util.add2dic(frags, frag, val=coeff)
+    frags = {k: v for k, v in frags.items() if v}
     if not frags:
-        frags = cbhtwo(frags)
+        frags = cbhtwo(ich)
 
     if balance:
         balance_ = util.balance(ich, frags)
@@ -379,29 +367,6 @@ def cbhthree(ich, balance=True):
             for frag in twofrags:
                 util.add2dic(newfrags, frag, -twofrags[frag])
             frags = {k: v for k, v in newfrags.items() if v}
-            # balance_ = util.balancec(ich, frags)
-            # balance_ = {k: v for k, v in balance_.items() if v}
-            # if balance_:
-            #    newfrags = frags.copy()
-            #    newerfrags = {}
-            #    onefrags = cbhone(ich, balance=False)
-            #    for frag in onefrags:
-            #         util.add2dic(newfrags, frag, - onefrags[frag])
-            #    frags = {k: v for k, v in newfrags.items() if v}
-            #    balance_ = util.balancec(ich, frags)
-            #    balance_ = {k: v for k, v in balance_.items() if v}
-            #    if balance_:
-            #        newfrags = frags.copy()
-            #        zedfrags = cbhzed(ich, balance=False)
-            #        for frag in zedfrags:
-            #            util.add2dic(newfrags, frag, zedfrags[frag])
-            #        frags = {k: v for k, v in newfrags.items() if v}
-            #        balance_ = util.balancec(ich, frags)
-            #        balance_ = {k: v for k, v in balance_.items() if v}
-            #        if balance_:
-            #            frags = util.balancec_frags(ich, frags)
-    # balance = util.balancec(ich, frags)
-    # balance_ = {k: v for k, v in balance_.items() if v}
     return frags
 
 # def cbhfour(ich):
@@ -419,11 +384,11 @@ def cbhthree(ich, balance=True):
 #    value as INT their coefficient
 #    """
 #    #Graphical info about molecule
-#    gra      = automol.inchi.graph(ich)
+#    gra      = automol.chi.graph(ich)
 #    atms     = automol.graph.atoms(gra)
-#    bnd_ords = automol.graph.one_resonance_dominant_bond_orders(gra)
-#    rad_atms = list(automol.graph.sing_res_dom_radical_atom_keys(gra))
-#    atm_vals = automol.graph.atom_element_valences(gra)
+#    bnd_ords = automol.graph.kekule_bond_orders(gra)
+#    rad_atms = list(automol.graph.radical_atom_keys(gra, sing_res=True))
+#    atm_vals = automol.graph.atomic_valences(gra)
 #    adj_atms = automol.graph.atom_neighbor_keys(gra)
 #
 #    #Determine CBHfour fragments
@@ -474,7 +439,7 @@ def cbhthree(ich, balance=True):
 #                   k -= 1
 #
 #        gra     = (atm_dic, bnd_dic)
-#        frag = automol.graph.inchi(gra)
+#        frag = automol.graph.chi(gra)
 #        util.add2dic(frags, frag)
 #    frags =  {k: v for k, v in frags.items() if v}
 #    ioprinter.info_message(frags)

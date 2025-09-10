@@ -3,7 +3,7 @@
 
 import numpy as np
 import automol.graph
-import automol.inchi
+import automol.chi
 
 
 # Check TS keys
@@ -41,16 +41,29 @@ def xor(lst1, lst2):
 
 
 def ts_graph(gra, site1, site2=None):
-    rad_atms = list(automol.graph.sing_res_dom_radical_atom_keys(gra))
-    unsat_atms_dct = automol.graph.atom_unsaturated_valences(gra)
-    unsat_atms = []
-    for atm in unsat_atms_dct:
-        if unsat_atms_dct[atm] > 0:
-            unsat_atms.append(atm)
-    atm_vals = automol.graph.atom_element_valences(gra)
-    rad_atms = list(automol.graph.sing_res_dom_radical_atom_keys(gra))
+    rad_atms = list(automol.graph.radical_atom_keys(gra, sing_res=True))
+    unsat_atms_dct = automol.graph.atom_unpaired_electrons(automol.graph.kekule(gra))
+    atm_vals = automol.graph.atomic_valences(gra)
+    print('gra herea', gra)
     atms = automol.graph.atoms(gra)
-    bnds = automol.graph.bonds(gra)
+    orig_bnds = automol.graph.bond_orders(gra)
+    print('orig', orig_bnds)
+    bnds = automol.graph.kekule_bond_orders(gra)
+    print('kekbnds', bnds)
+    for bnd, order in orig_bnds.items():
+        if bnd in bnds:
+            if orig_bnds[bnd] != bnds[bnd]:
+                if abs(orig_bnds[bnd] - bnds[bnd]) < 0.99:
+                    bnds[bnd] = orig_bnds[bnd]
+            if any([atm in site1 for atm in bnd]):
+                if bnds[bnd] > orig_bnds[bnd]:
+                    bnds[bnd] = orig_bnds[bnd]
+                    for atm in bnd:
+                        if atm not in site1:
+                            unsat_atms_dct[atm] += 1
+
+    unsat_atms = [atm for (atm, sat) in unsat_atms_dct.items() if sat > 0]
+    print('unsat atms', unsat_atms_dct)
     adj_atms = automol.graph.atoms_neighbor_atom_keys(gra)
     sites_lst = [site1]
     sites = site1
@@ -62,15 +75,17 @@ def ts_graph(gra, site1, site2=None):
             sites.extend(site2)
             sites_lst.append(site2)
             brk_bnd = frozenset({site2[1], site2[2]})
-            bnd_ord = bnds[brk_bnd][0]
-            bnds[brk_bnd] = (bnd_ord + 0.9, None)
+            bnd_ord = bnds[brk_bnd]
+            #bnds[brk_bnd] = (bnd_ord + 0.9, None)
+            bnds[brk_bnd] = bnd_ord + 0.9
         else:
             # second site is a forming pi bond
             sites.extend(site2)
             sites_lst.append(site2)
             frm_bnd = frozenset({site2[0], site2[1]})
-            bnd_ord = bnds[frm_bnd][0]
-            bnds[frm_bnd] = (bnd_ord + 0.1, None)
+            bnd_ord = bnds[frm_bnd]
+            #bnds[frm_bnd] = (bnd_ord + 0.1, None)
+            bnds[frm_bnd] = bnd_ord + 0.1
 
     # switch resonances so dbl bnd isn't in rction site
     if len(unsat_atms) > 2:
@@ -82,20 +97,20 @@ def ts_graph(gra, site1, site2=None):
                             if (unsat_c in unsat_atms and unsat_c != unsat_a
                                     and unsat_c not in sites):
                                 unsat_ab = frozenset({unsat_a, unsat_b})
-                                order_ab, tmp_ab = bnds[unsat_ab]
+                                order_ab = bnds[unsat_ab]
                                 if order_ab == 2:
                                     unsat_bc = frozenset({unsat_b, unsat_c})
-                                    order_bc, tmp_bc = bnds[unsat_bc]
-                                    bnds[unsat_ab] = (order_ab - 1, tmp_ab)
-                                    bnds[unsat_bc] = (order_bc + 1, tmp_bc)
+                                    order_bc = bnds[unsat_bc]
+                                    bnds[unsat_ab] = order_ab - 1
+                                    bnds[unsat_bc] = order_bc + 1
                                 else:
                                     unsat_bc = frozenset({unsat_b, unsat_c})
-                                    order_bc, tmp_bc = bnds[unsat_bc]
-                                    bnds[unsat_ab] = (order_ab, tmp_ab)
-                                    bnds[unsat_bc] = (order_bc + 1, tmp_bc)
+                                    order_bc = bnds[unsat_bc]
+                                    bnds[unsat_ab] = order_ab
+                                    bnds[unsat_bc] = order_bc + 1
     # fix the hydrogen valence of radical atms
-    for rad_atm in rad_atms:
-        atm_vals[rad_atm] -= 1
+    for atm in unsat_atms_dct:
+        atm_vals[atm] -= unsat_atms_dct[atm]
 
     for site in sites_lst:
         abs_atm = site[0]
@@ -148,7 +163,6 @@ def remove_hyd_from_adj_atms2(atms, adj_atms_dct, extended_site):
         new_adj_atms = ()
         for adj_atm in adj_atms_dct[atm]:
             if atms[adj_atm][0] != 'H' and adj_atm not in extended_site:
-                print(adj_atm, atms[adj_atm][0], extended_site)
                 new_adj_atms += (adj_atm,)
 
         new_adj_atms_dct[atm] = new_adj_atms
@@ -199,9 +213,9 @@ def split_radradabs_gras(gras):
             atms, bnd_ords = rct_gra
     rct_gras = automol.graph.connected_components(rct_gra)
     for rgra in rct_gras:
-        rct_ichs.append(automol.graph.inchi(rgra))
+        rct_ichs.append(automol.graph.chi(rgra))
     if len(rct_ichs) > 1:
-        rct_ichs = automol.inchi.sorted_(rct_ichs)
+        rct_ichs = automol.chi.sorted_(rct_ichs)
     atms, bnd_ords = gras
     for bnd_ord in bnd_ords:
         order, tmp = bnd_ords[bnd_ord]
@@ -238,9 +252,9 @@ def split_radradabs_gras(gras):
             atms, bnd_ords = prd_gra
     prd_gras = automol.graph.connected_components(prd_gra)
     for pgra in prd_gras:
-        prd_ichs.append(automol.graph.inchi(pgra))
+        prd_ichs.append(automol.graph.chi(pgra))
     if len(prd_ichs) > 1:
-        prd_ichs = automol.inchi.sorted_(prd_ichs)
+        prd_ichs = automol.chi.sorted_(prd_ichs)
     return (rct_ichs, prd_ichs)
 
 
@@ -296,13 +310,13 @@ def split_gras(gras):
     rct_ichs = []
     prd_ichs = []
     for rgra in rct_gras:
-        rct_ichs.append(automol.graph.inchi(rgra))
+        rct_ichs.append(automol.graph.chi(rgra))
     for pgra in prd_gras:
-        prd_ichs.append(automol.graph.inchi(pgra))
+        prd_ichs.append(automol.graph.chi(pgra))
     if len(rct_ichs) > 1:
-        rct_ichs = automol.inchi.sorted_(rct_ichs)
+        rct_ichs = automol.chi.sorted_(rct_ichs)
     if len(prd_ichs) > 1:
-        prd_ichs = automol.inchi.sorted_(prd_ichs)
+        prd_ichs = automol.chi.sorted_(prd_ichs)
     return rct_ichs, prd_ichs
 
 
@@ -337,7 +351,7 @@ def add_appropriate_pi_bonds(gra, frm_key):
     """
 
     adj_atms = automol.graph.atoms_neighbor_atom_keys(gra)
-    unsat_atms_dct = automol.graph.atom_unsaturated_valences(gra)
+    unsat_atms_dct = automol.graph.atom_unpaired_electrons(gra)
     atms, bnd_ords = gra
     brk_key = frozenset({})
     unsat_atms = []
@@ -378,7 +392,7 @@ def ring_forming_forming_bond(gra, brk_key):
     """
     frm_key = frozenset({})
     adj_atms = automol.graph.atoms_neighbor_atom_keys(gra)
-    rad_atms = list(automol.graph.sing_res_dom_radical_atom_keys(gra))
+    rad_atms = list(automol.graph.radical_atom_keys(gra, sing_res=True))
     form_atm1 = rad_atms[0]
     for break_atm in brk_key:
         if adj_atms[break_atm] > 1:

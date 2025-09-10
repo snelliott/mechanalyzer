@@ -2,10 +2,13 @@
 Calculate rates with various fitting functions
 """
 
+import sys
 import copy
 import numpy
+import pandas
 from phydat import phycon
 from scipy.special import eval_chebyt
+from mechanalyzer.calculator import thermo
 
 RC = phycon.RC_CAL  # gas constant in cal/(mol.K)
 RC2 = phycon.RC_ATM  # gas constant in cm^3.atm/(mol.K)
@@ -26,6 +29,7 @@ def eval_rxn_param_dct(rxn_param_dct, temps_lst, pressures, tref=1.0):
     """
 
     temps_lst = check_p_t(temps_lst, pressures)  # enforce formatting rules
+
     rxn_ktp_dct = {}
     for rxn, params in rxn_param_dct.items():
         ktp_dct = eval_params(params, temps_lst, pressures, tref=tref)
@@ -47,6 +51,8 @@ def eval_params(params, temps_lst, pressures, tref=1.0):
         :return ktp_dct: k(T,Ps) at all temps and pressures
         :rtype: dict {pressure: (temps, kts)}
     """
+
+    temps_lst = check_p_t(temps_lst, pressures)  # enforce formatting rules
 
     # Get the list of existing forms
     forms = params.get_existing_forms()
@@ -503,22 +509,68 @@ def lind(highp_arr, lowp_arr, temps_lst, pressures, collid_factor=1.0,
     return ktp_dct
 
 
-def merge_rxn_ktp_dcts(full_rxn_ktp_dct, rxn_ktp_dct):
+def merge_rxn_ktp_dcts(full_rxn_ktp_dct, rxn_ktp_dct, sum_multichannel=False):
     """ Merge a reaction ktp dictionary into an existing one.
-        If a reaction currently exists in both. Then we add the kts
+        If a reaction currently exists in both, then we add the kts
         together for the reactions.
+        If a reaction is a self-reaction A+B=A+B (and same bath gas):
+        the reaction is not added
 
+        sum_multichannel=True: adds rate constants if the reactants are the same
+        useful to check overall rate constants instead of product branching fractions
     """
-    # Add the prompt dictionary to the full one
+    # Add dictionary to another ktp dictionary
     # We will add the rates together if rxn is prev. found
+    reactions = list(full_rxn_ktp_dct.keys())
+    reactants = [sorted(list(rxn[0])) for rxn in reactions]
     for rxn, _ktp1 in rxn_ktp_dct.items():
-        if rxn not in full_rxn_ktp_dct:
+        # if reactants and products are the same: do not add
+        rcts = list(rxn[0])
+        prds = list(rxn[1])
+        rcts.sort(), prds.sort()
+
+        if rcts == prds:
+            print('self reaction {} skipped'.format(rxn))
+            continue
+
+        if ((sum_multichannel is False and rxn not in reactions) or
+            (sum_multichannel is True and rcts not in reactants)):
             # Simply place rates into the full dct
             full_rxn_ktp_dct[rxn] = _ktp1
-        else:
+            reactions.append(rxn)
+            reactants.append(rcts)
+
+        elif rxn in reactions:
             # Add the existing rates from the full and small dct together
+            # sum_multichannel does not matter here
             _ktp2 = full_rxn_ktp_dct[rxn]
             full_rxn_ktp_dct[rxn] = add_ktp_dcts(_ktp1, _ktp2)
+
+        # same reactants, but different products
+        elif sum_multichannel is True and rcts in reactants and rxn not in reactions:
+            # find rxn with same reactants
+            mask = numpy.array([rcts == rcts0 for rcts0 in reactants], dtype=bool)
+            rxns_toadd = [reactions[i] for i, m in enumerate(mask) if m]
+            rxn_new = (rxn[0], ('*merged prods',), rxn[2])
+            # if merged prods already in the dictionary: _ktp1 will be summed
+            if rxn_new in full_rxn_ktp_dct.keys():
+                full_rxn_ktp_dct[rxn_new] = add_ktp_dcts(
+                    _ktp1, full_rxn_ktp_dct[rxn_new])
+            else:
+                full_rxn_ktp_dct[rxn_new] = _ktp1
+
+            for rxn_toadd in rxns_toadd:
+                # check if rxn still in full_rxn_ktp_dct;
+                # maybe it was deleted after sum
+                if rxn_toadd in full_rxn_ktp_dct.keys():
+                    # Add the existing rates from the full and small dct together
+                    _ktp2 = full_rxn_ktp_dct[rxn_toadd]
+                    # rename reaction products
+                    full_rxn_ktp_dct[rxn_new] = add_ktp_dcts(
+                        full_rxn_ktp_dct[rxn_new], _ktp2)
+                    # drop rxn in dictionary, revise list of reactions and reactants
+                    del full_rxn_ktp_dct[rxn_toadd]
+            # rxn of _ktp1 will not be added with its name in the full_rxn_ktp_dct
 
     return full_rxn_ktp_dct
 
@@ -584,6 +636,99 @@ def add_ktp_dcts(ktp_dct1, ktp_dct2):
 
     return added_dct
 
+def get_aligned_rxn_ratio_dct(aligned_rxn_dct_entry, ref_idx = 0):
+    """ converts the entry of the aligned_rxn_ktp_dictionary to the ratios
+        between the reference rate and the given rate
+
+    :param aligned_rxn_dct_entry: entry of aligned_rxn_ktp/ratio_dct
+    :type aligned_rxn_dct_entry:
+        list[dct{pressure: numpy.array(temps), numpy.array(values)}]
+    :param ref_idx (int): reference index for ratio
+    :return aligned_ratio_dct_entry: aligned dictionary entry
+    :rtype: list(dct)
+    """
+
+    ref_ktp_dct = aligned_rxn_dct_entry[ref_idx]
+    ratio_dct_entry = []
+    for _, ktp_dct in enumerate(aligned_rxn_dct_entry):
+        # If (1) the ref_ktp_dct is None,
+        # or (2) the current_ktp_dct is None, set the ratio_dct to None
+        # if mech_idx == ref_idx or ref_ktp_dct is None or ktp_dct is None:
+        # NB earlier we also put None if ktp_dct was the ref one, but all 1s work too
+        if ref_ktp_dct is None or ktp_dct is None:
+            ratio_dct = None
+        # Otherwise, calculate the ratio_dct
+        else:
+            ratio_dct = {}
+            for pressure, (temps, kts) in ktp_dct.items():
+                # If pressure defined in ref ktp_dct: calculate and store ratio
+                if pressure in ref_ktp_dct.keys():
+                    _, ref_kts = ref_ktp_dct[pressure]
+                    ratios = kts / ref_kts
+                    ratio_dct[pressure] = (temps, ratios)
+            if ratio_dct == {}:  # account for when no pressures contain ratios
+                ratio_dct = None
+
+        # Append the current ratio_dct
+        ratio_dct_entry.append(ratio_dct)
+
+    return ratio_dct_entry
+
+
+def get_max_aligned_values(aligned_rxn_dct_entry):
+    """ Gets the maximum values for each reaction from an entry (value) of
+        either an aligned_rxn_ktp_dct or an aligned_rxn_ratio_dct
+
+    :param aligned_rxn_dct_entry: entry of aligned_rxn_ktp/ratio_dct
+                                  or of ktp dct
+    :type aligned_rxn_dct_entry:
+        list[dct{pressure: numpy.array(temps), numpy.array(values)}]
+        or directly dct{pressure: numpy.array(temps), numpy.array(values)}
+    :return max_val: max value
+    :rtype: float
+    """
+
+    max_val = 0
+
+    for single_dct in aligned_rxn_dct_entry:
+        if single_dct is not None:
+            for _, (_, values) in single_dct.items():
+                max_val = max(max(values), max_val)
+
+    return max_val
+
+def is_ktp_dct_withinboundaries(rxn_ktp_dct, lower_boundary, upper_boundary):
+    """ get warning if reaction ktp dct is not within boundaries
+
+    Args:
+        rxn_ktp_dct (dict): rxn_name: {p: ((temps), (vals))}
+        lower_boundary, upper_boundary: boundare
+
+    return warnings_dict (dict): rxn_name: {violates_lower: sub_ktp_dct # where below lower boundary
+                                            violates_upper: sup_ktp_dct # where above upper boundary
+                                            n_instances:x} # tot number of instances outside of boundaries
+    """
+    warnings_dict = {}
+    for rxn, ktps in rxn_ktp_dct.items():
+        violates_lower = {}
+        violates_upper = {}
+        n_instances = 0
+
+        for p, kp in ktps.items():
+            klow_mask = kp[1] < lower_boundary
+            khigh_mask = kp[1] > upper_boundary
+            if any(klow_mask):
+                violates_lower[p] = [kp[0][klow_mask], kp[1][klow_mask]]
+                n_instances += len(kp[0][klow_mask])
+            if any(khigh_mask):
+                violates_upper[p] = [kp[0][khigh_mask], kp[1][khigh_mask]]
+                n_instances += len(kp[0][khigh_mask])
+
+        if n_instances > 0:
+            warnings_dict[rxn] = {'violates_lower': violates_lower,
+                                  'violates_upper': violates_upper,
+                                  'n_instances': n_instances}
+    return warnings_dict
 
 def check_p_t(temps_lst, pressures):
     """ Enforces rules on the temps_lst and pressures. In the case where the
@@ -595,8 +740,6 @@ def check_p_t(temps_lst, pressures):
         :param pressures: pressures used to get k(T,P)s (atm)
         :type pressure: list
     """
-
-    assert isinstance
 
     # Accepted types for temps_lst and pressures
     good = (list, tuple)
@@ -627,6 +770,70 @@ def check_p_t(temps_lst, pressures):
         new_temps_lst = copy.copy(temps_lst)  # temps_lst is unchanged
 
     return new_temps_lst
+
+
+def checks_temp_pressure_and_extend(ped_df, hotbf_df):
+    """ compare T,P """
+    temp_ped, pressure_ped = [ped_df.index, ped_df.columns]
+    temp_hot, pressure_hot = [hotbf_df.index, hotbf_df.columns]
+    # check that T of temp_hot are at least as many as those of temp_ped
+    # if they're not, it doesn't make sense to continue
+    if not all(temp_ped_i in temp_hot for temp_ped_i in temp_ped):
+        print('*Error: temperature range in HOTenergies '
+              'does not cover the full range')
+        sys.exit()
+
+    # if in pressure_ped not all pressures of hoten are available:
+    # extend the range of pressures
+    # ex.: for H abstractions, they will be pressure independent
+    # but probably the successive decomposition is not
+    if not all(pressure_hot_i in pressure_ped
+               for pressure_hot_i in pressure_hot):
+        print('*Warning: P range of PedOutput smaller than HOTenergies:\n')
+        print('Energy distribution at other pressure '
+              'approximated from available values \n')
+        ped_df = extend_dct_with_pressure(
+            pressure_hot, pressure_ped, ped_df)
+
+    # check that pressures of pressure_ped are contained in hot energies
+    # if they are not: extend pressure range assuming behavior is the same
+    # ELIF no good here - might be that pressure_ped and pressure_hot
+    #   only intersect in a limited range
+    if not all(pressure_ped_i in pressure_hot
+               for pressure_ped_i in pressure_ped):
+        print('Warning: P range of HOTenergies smaller than PEDoutput:')
+        print('Energy distribution at other pressures '
+              'approximated from available values \n')
+        hotbf_df = extend_dct_with_pressure(
+            pressure_ped, pressure_hot, hotbf_df)
+
+    return ped_df, hotbf_df
+
+
+def extend_dct_with_pressure(pressure_all, pressure_red, dct_toextend):
+    """ Takes a dictionary(dataframe) with pressure keys(columns) and extends it:
+        approximate the values at missing pressures with available values
+
+        :param pressure_all: all pressures
+        :type pressure_all: list
+        :param dct_toextend: dictionary (dataframe) w/ pressure_reduced as keys
+        :type dct_toextend: dictionary (dataframe)
+        :return dct_extended: dictionary with pressure_all as keys (columns)
+        :rtype: dictionary (dataframe)
+    """
+
+    for pressure in pressure_all:
+        if pressure not in pressure_red:
+            # approximate pressure:
+            # provides the minimum difference with pressure_ped_i
+            pressure_approx = pressure_red[
+                numpy.argmin(
+                    [numpy.log(abs(pressure_red_i-pressure))
+                     for pressure_red_i in pressure_red])]
+            # extend original dataframe
+            dct_toextend[pressure] = dct_toextend[pressure_approx]
+
+    return dct_toextend
 
 
 def p_to_m(pressure, temps, rval=RC2):
@@ -734,3 +941,42 @@ def mult_by_factor(ktp_dct, factor):
         new_ktp_dct[pressure] = (temps, kts * factor)
 
     return new_ktp_dct
+
+
+def get_bw_ktp_dct(ktp_dct_entry, rcts, prds, therm_df):
+    """get backward rate constants for entries in a ktp dct
+
+    Args:
+        ktp_dct_entry: usual ktp dct entry
+        rcts (tuple): reactants
+        prds (tuple): products
+        therm_df (dataframe): dataframe with thermochemistry
+    returns: ktp_dct_entry_bw
+    """
+    ktp_dct_entry_bw = {}
+    for P, vals in ktp_dct_entry.items():
+        Tvect, k = vals
+        kt_series = pandas.Series(k, index=Tvect)
+        dg_rxn = thermo.extract_deltaX_therm(therm_df, rcts, prds, 'G')
+        kt_series_bw = get_bw_rate(kt_series, rcts, prds, dg_rxn)
+        ktp_dct_entry_bw[P] = (Tvect, kt_series_bw.values)
+
+    return ktp_dct_entry_bw
+
+
+def get_bw_rate(kt_series, rcts, prds, dg_rxn):
+    """get backward rate constat
+
+    Args:
+        kt_series (pd series): k values. index is temperature
+        rcts (tuple): reactants
+        prds (tuple): products
+        dg_rxn (pd series): DG(T)
+    """
+    deltanu = len(prds) - len(rcts)
+    # 1e+5 Pa / 1e+6 to get cm3
+    kt_series *= numpy.power((1e+5/8.314/kt_series.index/numpy.power(10, 6)),-deltanu)
+    kt_series *= numpy.exp(dg_rxn[kt_series.index]/1.987/kt_series.index)
+
+    return kt_series
+

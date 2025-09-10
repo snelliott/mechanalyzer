@@ -109,7 +109,7 @@ def _read_csv(input_name):
     data = _get_data(input_name)
     spc_lst = ()
     for name, smi, hof in zip(data.name, data.smiles, data.hof):
-        fml = automol.inchi.formula(automol.smiles.inchi(smi))
+        fml = automol.chi.formula(automol.smiles.chi(smi))
         _hof = hof * phycon.KCAL2EH
 
         spc_lst += ((name, fml, _hof),)
@@ -145,7 +145,7 @@ def _run_autorun(name, fml, hform0, pf_str, run_dir):
 
     print(f'    - Running ThermP+PAC99 at {run_dir}')
 
-    fml_str = automol.formula.string(fml)
+    fml_str = automol.form.string(fml)
 
     thermp_script_str = autorun.SCRIPT_DCT['thermp']
     pac99_script_str = autorun.SCRIPT_DCT['pac99'].format(fml_str)

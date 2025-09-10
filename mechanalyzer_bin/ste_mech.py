@@ -4,27 +4,32 @@
 import os
 import time
 import itertools as it
+import numpy
 
+import automol
 import ioformat
 import chemkin_io
-import mechanalyzer
 from autofile import io_ as io
-import automol
+import mechanalyzer
 from mechanalyzer.builder import sorter
 
 
 def main(
         out_loc, out_spc, out_mech,
         inp_spc_str, inp_mech_str, sort_str,
-        check_mechanism=False):
+        check_mechanism=False,
+        enant=False,
+        rename=False,
+        enant_label=True,
+        debug=False):
     """ carry out all the mechanism things you wanna do
     """
     # Build the initial dictionaries
     mech_spc_dct = mechanalyzer.parser.spc.build_spc_dct(inp_spc_str, 'csv')
     rxn_param_dct = mechanalyzer.parser.mech.parse_mechanism(
         inp_mech_str, 'chemkin')
-    isolate_spc, sort_lst = mechanalyzer.parser.mech.parse_sort(sort_str)
-
+    isolate_spc, sort_lst, _ = mechanalyzer.parser.mech.parse_sort(sort_str)
+    print('mechspc dct', mech_spc_dct)
     # Remove reactions that should not be there
     if check_mechanism:
         print('\n Removing improper reactions')
@@ -35,7 +40,8 @@ def main(
     print('\n---- Adding stereochemistry to InChIs of mechanism'
           ' species where needed ---\n')
     mech_spc_dct = mechanalyzer.parser.spc.stereochemical_spc_dct(
-        mech_spc_dct, nprocs='auto', all_stereo=True)
+        mech_spc_dct, nprocs='auto', all_stereo=False, enant=enant)
+    print('mechspc dct2', mech_spc_dct)
     print('Mechanism species with stereo added')
     for name, dct in mech_spc_dct.items():
         print(f'Name: {name:<25s} InChI: {dct["inchi"]}')
@@ -43,81 +49,43 @@ def main(
     # Expand the reactions in the mechanism to include stereochemical variants
     print('\n---- Expanding the list of mechanism reactions to include all'
           ' valid, stereoselective permutations ---\n')
-    sccs_rxn_dct_lst = mechanalyzer.builder.expand_mech_stereo(
-        rxn_param_dct, mech_spc_dct, nprocs='auto')
+    if not debug:
+        full_rxn_lst = mechanalyzer.builder.expand_mech_stereo(
+            rxn_param_dct, mech_spc_dct, nprocs='auto', enant=enant)
+        spc_orig_name_dct = {}
+    else:
+        print("Running in debug mode...")
+        full_rxn_lst, spc_orig_name_dct, failed = (
+                mechanalyzer.builder.expand_mech_stereo_debug(
+                    rxn_param_dct, mech_spc_dct, enant=enant))
+        name_ich_dct = mechanalyzer.parser.spc.name_inchi_dct(mech_spc_dct)
+        print("SUCCEEDED:")
+        for rxn in full_rxn_lst:
+            print(chemkin_io.writer._util.format_rxn_name(rxn))
+        print()
+        print("FAILED:")
+        for rxn in failed:
+            print(chemkin_io.writer._util.format_rxn_name(rxn))
+            print(mechanalyzer.builder._rxn_name_to_ich(rxn, name_ich_dct))
+        print()
 
-    # Loop over all sccs to write their mechfiles and keep track of
-    # the good ones to reduce from
-    ccs_sccs_spc_dct = {}
-    for ccs_idx, sccs_rxn_dct in enumerate(sccs_rxn_dct_lst):
-        for sccs_idx, sccs_rxn_lst in sccs_rxn_dct.items():
-
-            ret_dcts = dictionaries_from_rxn_lst(
-                sccs_rxn_lst)
-            ste_mech_spc_dct, ste_rxn_dct = ret_dcts
-            is_valid = mechanalyzer.builder.valid_enantiomerically(
-                ste_mech_spc_dct)
-
-            if is_valid:
-                if ccs_idx not in ccs_sccs_spc_dct:
-                    ccs_sccs_spc_dct[ccs_idx] = {0: [
-                        ste_mech_spc_dct[spc_name][
-                            'inchi'] for spc_name in ste_mech_spc_dct.keys()]}
-                else:
-                    ccs_sccs_spc_dct[ccs_idx][sccs_idx] = [
-                        ste_mech_spc_dct[spc_name][
-                            'inchi'] for spc_name in ste_mech_spc_dct.keys()]
-            # OBTAIN SORTED SPECIES AND MECHANISMS
-            write_mechanism(
-                ste_mech_spc_dct, ste_rxn_dct, out_loc, out_spc, out_mech,
-                sort_lst.copy(), isolate_spc, ccs_idx, sccs_idx)
-
-    # Choose the sccs for each ccs that works with the rest of the mech
-    chosen_idx_lst = ()
-    all_chosen_ichs = ()
-    for ccs_idx, sccs_dct in ccs_sccs_spc_dct.items():
-        if not chosen_idx_lst:
-            chosen_idx_lst += ((ccs_idx, 0),)
-            all_chosen_ichs += tuple(sccs_dct[0])
-            continue
-        max_overlap = 0
-        best_idx = 0
-        for sccs_idx, spc_dct in sccs_dct.items():
-            num_overlap = len(set(all_chosen_ichs) & set(spc_dct))
-            if num_overlap > max_overlap:
-                max_overlap = num_overlap
-                best_idx = sccs_idx
-        chosen_idx_lst += ((ccs_idx, best_idx),)
-        all_chosen_ichs += tuple(sccs_dct[best_idx])
-
-    print('Identifying diastereomer abstractions')
-    dias_idxs = mechanalyzer.builder.diastereomer_abstractions(
-        sccs_rxn_dct_lst, ccs_sccs_spc_dct,
-        chosen_idx_lst, all_chosen_ichs)
-
-    if dias_idxs:
-        dia_str = ', '.join(
-            (f'({ccs}, {sccs})' for (ccs, sccs) in dias_idxs)
-        )
-        print(f'Found new diastereomers to add: {dia_str}')
-
-        chosen_idx_lst += dias_idxs
-
-    print('Reduced reactions are from (CCS,SCCS):', chosen_idx_lst)
-    reduced_rxn_lst = ()
-    for ccs_idx, sccs_idx in chosen_idx_lst:
-        reduced_rxn_lst += sccs_rxn_dct_lst[ccs_idx][sccs_idx]
-
+    print('turning reaction list into mechanism dictionary')
     ste_mech_spc_dct, ste_rxn_dct = dictionaries_from_rxn_lst(
-        reduced_rxn_lst)
+        full_rxn_lst, rename=rename, enant_label=enant_label,
+        spc_orig_name_dct=spc_orig_name_dct)
+    print('Writing expanded stereomechanism')
     write_mechanism(
         ste_mech_spc_dct, ste_rxn_dct, out_loc, out_spc, out_mech,
-        sort_lst.copy(), isolate_spc)
+        sort_lst.copy(), isolate_spc, '_full')
+    print('Writing original mechanism')
+    write_mechanism(
+        mech_spc_dct, rxn_param_dct, out_loc, out_spc, out_mech,
+        sort_lst.copy(), isolate_spc, '_orig')
 
 
 def write_mechanism(
         ste_mech_spc_dct, ste_rxn_dct, out_loc, out_spc, out_mech,
-        sort_lst, isolate_spc, ccs_idx=None, sccs_idx=None):
+        sort_lst, isolate_spc, suffix=''):
     """ write mechanism
     """
     # Write the new (sorted) species dictionary to a string
@@ -152,16 +120,11 @@ def write_mechanism(
         rxn_param_dct=param_dct_sort,
         rxn_cmts_dct=rxn_cmts_dct)
 
-    # Write the species and mechanism files
-    if ccs_idx is not None and sccs_idx is not None:
-        ioformat.pathtools.write_file(
-            csv_str, out_loc, out_spc + '_{:g}_{:g}'.format(ccs_idx, sccs_idx))
-        ioformat.pathtools.write_file(
-            mech_str, out_loc,
-            out_mech + '_{:g}_{:g}'.format(ccs_idx, sccs_idx))
-    else:
-        ioformat.pathtools.write_file(csv_str, out_loc, out_spc)
-        ioformat.pathtools.write_file(mech_str, out_loc, out_mech)
+    print("Writing files...")
+    print(f"Writing {out_spc + suffix}")
+    ioformat.pathtools.write_file(csv_str, out_loc, out_spc + suffix)
+    print(f"Writing {out_mech + suffix}")
+    ioformat.pathtools.write_file(mech_str, out_loc, out_mech + suffix)
 
 
 def input_from_location_dictionary(cwd, loc_dct):
@@ -180,19 +143,21 @@ def input_info_from_file(cwd, species_file, mech_file, sort_file):
         remove_comments='!', remove_whitespace=True)
     inp_mech_str = ioformat.pathtools.read_file(
         cwd, mech_file,
-        remove_comments='#', remove_whitespace=True)
+        remove_comments='!', remove_whitespace=True)
     sort_str = ioformat.pathtools.read_file(
         cwd, sort_file,
         remove_comments='#', remove_whitespace=True)
     return inp_spc_str, inp_mech_str, sort_str
 
 
-def dictionaries_from_rxn_lst(sccs_rxn_lst):
+def dictionaries_from_rxn_lst(sccs_rxn_lst, rename=False, enant_label=True,
+                              spc_orig_name_dct=None):
     """ transform the reaction list to the dictionaries the writer likes
     """
     ste_mech_spc_dct, ste_rxn_dct = {}, {}
     ste_mech_spc_dct = mechanalyzer.builder.update_spc_dct_from_reactions(
-        sccs_rxn_lst, ste_mech_spc_dct)
+        sccs_rxn_lst, ste_mech_spc_dct, rename=rename, enant_label=enant_label,
+        spc_orig_name_dct=spc_orig_name_dct)
     ste_rxn_dct = mechanalyzer.builder.update_rxn_dct(
         sccs_rxn_lst, ste_rxn_dct, ste_mech_spc_dct)
     ste_mech_spc_dct = mechanalyzer.builder.remove_spc_not_in_reactions(
@@ -285,7 +250,7 @@ def find_best_combination(spc_ccs_dct, combo_lst):
         num_uniq_spc_for_combo += (len(uniq_spc_lst),)
         # enant_count = 0
         # for spc_a, spc_b in it.combinations(spc_ich_lst, 2):
-        #     if automol.inchi.are_enantiomers(spc_a, spc_b):
+        #     if automol.chi.are_enantiomers(spc_a, spc_b):
         #         enant_count += 1
         # combo_ent_count += (enant_count,)
         # print('found {:g} enantiomers for this combo'.format(enant_count))
@@ -297,15 +262,18 @@ def find_best_combination(spc_ccs_dct, combo_lst):
     # print('best combo', best_combo)
     shortest_spc_lst = min(num_uniq_spc_for_combo)
     print('greatest overlap', shortest_spc_lst)
-    best_combo_idx = num_uniq_spc_for_combo.index(shortest_spc_lst)
-    best_combo = combo_lst[best_combo_idx]
-    print('best combo', best_combo)
-    enant_count = 0
-    for spc_a, spc_b in it.combinations(uniq_spc_lst_lst[best_combo_idx], 2):
-        if automol.inchi.are_enantiomers(spc_a, spc_b):
-            print('Enantiomer pair:', spc_a, spc_b)
-            enant_count += 1
-    print('found {:g} enantiomers for this combo'.format(enant_count))
+    # best_combo_idx = num_uniq_spc_for_combo.index(shortest_spc_lst)
+    best_combo_idxs = numpy.where(
+        numpy.array(num_uniq_spc_for_combo) == shortest_spc_lst)
+    print('number of best combo idxs', len(best_combo_idxs), best_combo_idxs)
+    for best_combo_idx in best_combo_idxs:
+        enant_count = 0
+        best_combo = combo_lst[int(best_combo_idx)]
+        print('best combo', best_combo)
+        for spc_a, spc_b in it.combinations(uniq_spc_lst_lst[int(best_combo_idx)], 2):
+            if automol.inchi.are_enantiomers(spc_a, spc_b):
+                enant_count += 1
+        print('found {:g} enantiomers for this combo'.format(enant_count))
     return best_combo
 
 
@@ -360,11 +328,16 @@ if __name__ == '__main__':
         oscwd, 'build.dat',
         remove_comments='#', remove_whitespace=True)
     file_dct, _ = mechanalyzer.parser.build_input_file(bld_str)
-
     # Read input species and mechanism files into dictionary
     mech_info = input_from_location_dictionary(oscwd, file_dct)
-    # main(oscwd, file_dct['out_spc'], file_dct['out_mech'], *mech_info)
-    reduction(oscwd, file_dct)
+    DEBUG = file_dct['debug'] if 'debug' in file_dct else False
+    ENANT = file_dct['enant'] if 'enant' in file_dct else False
+    RENAME = file_dct['rename'] if 'rename' in file_dct else False
+    ENANT_LABEL = (file_dct['enant_label'] if 'enant_label' in file_dct
+                   else True)
+    main(oscwd, file_dct['out_spc'], file_dct['out_mech'], *mech_info,
+         debug=DEBUG, enant=ENANT, rename=RENAME, enant_label=ENANT_LABEL)
+    # reduction(oscwd, file_dct)
     # Compute script run time and print to screen
     tf = time.time()
     print('\n\nScript executed successfully.')

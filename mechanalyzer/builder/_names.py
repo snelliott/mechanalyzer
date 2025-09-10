@@ -3,11 +3,10 @@
 
 import copy
 import ioformat
-import automol.inchi
-import automol.geom
+import automol.chi
 import automol.graph
 from automol.graph import FunctionalGroup
-import automol.formula
+import automol.form
 
 
 # Name remaping function
@@ -114,7 +113,8 @@ DEFAULT_FGRP_RENAME_RULE_DCT = {
 }
 
 # Functional groups to ignore when considering the naming scheme
-IGNORE_FGRPS = ('methyl',)
+IGNORE_FGRPS = ('methyl', 'alkane', 'alkoxy_oc',
+                'allene', 'propyne', 'allyl')
 
 # Dictionary to remap names to more common ones
 NAME_EXCEPTION_DCT = {
@@ -122,7 +122,8 @@ NAME_EXCEPTION_DCT = {
 }
 
 
-def functional_group_name_dct(mech_spc_dct, rename_rule_dct=None):
+def functional_group_name_dct(mech_spc_dct, rename_rule_dct=None,
+                              force_rename=False):
     """ Build a dictionary to map the names of a mechanism according
         to its functional groups and number of carbon atoms.
 
@@ -149,27 +150,32 @@ def functional_group_name_dct(mech_spc_dct, rename_rule_dct=None):
     fgrp_map_dct = {}
     for name, dct in mech_spc_dct.items():
         fgrp_map_dct[name] = functional_group_name(
-            dct['inchi'], name=name, rename_rule_dct=rename_rule_dct)
+            dct['inchi'], name=name, rename_rule_dct=rename_rule_dct,
+            force_rename=force_rename)
     return fgrp_map_dct
 
 
-def functional_group_name(ich, name='', rename_rule_dct=None):
+def functional_group_name(ich, name='', rename_rule_dct=None,
+                          enant_label=True, force_rename=False):
     """ Assign the functional group name
+
+        :param enant_label: Include the enantiomer label?
+        :type enant_label: bool
     """
 
     def _conn_string(ich):
         """ Get the connectivity string
         """
         # OLD SCHEME
-        # conn_string = automol.inchi.connectivity(
+        # conn_string = automol.chi.connectivity(
         #     ich, parse_connection_layer=True, parse_h_layer=True)
         # return ioformat.hash_string(
         #   conn_string, 3, remove_char_lst=('-', '_'))
 
         # NEW SCHEME
-        c_conn_str = automol.inchi.connectivity(
+        c_conn_str = automol.chi.connectivity(
             ich, parse_connection_layer=True, parse_h_layer=False)
-        h_conn_str = automol.inchi.connectivity(
+        h_conn_str = automol.chi.connectivity(
             ich, parse_connection_layer=False, parse_h_layer=True)
         chash = ioformat.hash_string(c_conn_str, 3, remove_char_lst=('-', '_'))
         hhash = ioformat.hash_string(h_conn_str, 3, remove_char_lst=('-', '_'))
@@ -214,21 +220,19 @@ def functional_group_name(ich, name='', rename_rule_dct=None):
         rename_rule_dct = copy.deepcopy(DEFAULT_FGRP_RENAME_RULE_DCT)
     rename_rule_dct = {fgrp_name: tuple(sorted(list(fgrp_lst)))
                        for fgrp_name, fgrp_lst in rename_rule_dct.items()}
-
+    print(rename_rule_dct)
     # Get the ich, geom, and gra and other info used for getting name
-    geo = automol.inchi.geometry(ich)
-    gra = automol.inchi.graph(ich)
+    gra = automol.chi.graph(ich)
+    fml = automol.graph.formula(gra)
 
     # Get the number of atoms and functional groups
-    c_cnt = automol.geom.atom_count(geo, 'C', match=True)
+    hvy_atm_cnt = automol.graph.atom_count(gra, heavy_only=True)
     fgrp_cnt_dct = automol.graph.functional_group_count_dct(gra)
+    print(fgrp_cnt_dct)
 
-    # If certain conditions met, determine a new name
-    if (
-        'cbh' not in name and
-        c_cnt > 2 and
-        fgrp_cnt_dct
-    ):
+    if name and not force_rename:
+        re_name = name
+    else:
         # OLD SCHEME
         # # Get the labels
         # conn_lbl = _conn_string(ich)
@@ -243,25 +247,25 @@ def functional_group_name(ich, name='', rename_rule_dct=None):
         # re_name += f'-{fgrp_lbl}'
 
         # NEW SCHEME
+        fml_lbl_full = automol.form.string(fml, hyd=True)
+        fml_lbl_short = automol.form.string(fml, hyd=False)
         conn_lbl = _conn_string(ich)
-        ste_lbl = stereo_name_suffix(ich)
+        ste_lbl = stereo_name_suffix(ich, enant_label=enant_label)
         fgrp_lbl = _fgrp_name_string(fgrp_cnt_dct, rename_rule_dct)
         # Build the names string
-        re_name = f'C{c_cnt}'
-        re_name += f'{fgrp_lbl}'
-        re_name += '-'
-        re_name += f'{conn_lbl}'
-        if ste_lbl:
-            re_name += f'{ste_lbl}'
-    else:
-        # Use input name or use formula
-        if name:
-            re_name = name
+        if hvy_atm_cnt == 1:
+            re_name = f'{fml_lbl_full}'
         else:
-            re_name = automol.inchi.formula_string(ich)
-            if c_cnt > 1:
-                conn_lbl = _conn_string(ich)
-                re_name += f'-{conn_lbl}'
+            re_name = f'{fml_lbl_full}{fgrp_lbl}-{conn_lbl}{ste_lbl}'
+
+            if len(re_name) > 16:
+                re_name = f'{fml_lbl_full}{conn_lbl}{ste_lbl}'
+
+            if len(re_name) > 16:
+                re_name = f'{fml_lbl_short}{conn_lbl}{ste_lbl}'
+
+            if len(re_name) > 16:
+                print("WARNING! Name longer than 16 characters: {re_name}")
 
     # Put in name exception remapping
     re_name = NAME_EXCEPTION_DCT.get(re_name, re_name)
@@ -319,7 +323,7 @@ def formula_name(ich, fml_cnt_dct, spc_dct):
         formula appears in some mechanism.
     """
 
-    fml_str = automol.inchi.formula_string(ich)
+    fml_str = automol.chi.formula_layer(ich)
 
     if fml_str in fml_cnt_dct:
 
@@ -348,11 +352,16 @@ def rxn_ich_to_name(rxn, spc_dct):
         described by mechanism names
     """
 
-    _ich_name_dct = ich_name_dct(spc_dct)
+    has_inf = False
+    if rxn:
+        if rxn[0]:
+            if not isinstance(rxn[0], str):
+                has_inf = True
+    _ich_name_dct = ich_name_dct(spc_dct, incl_mult=has_inf, incl_chg=has_inf)
     return (
         tuple(_ich_name_dct[rgt] for rgt in rxn[0]),
         tuple(_ich_name_dct[rgt] for rgt in rxn[1]),
-        rxn[2]
+        tuple(rxn[2])
     )
 
 
@@ -366,53 +375,51 @@ def rxn_name_str(rxn, newline=False):
     return rstr
 
 
-def ich_name_dct(spc_dct):
+def ich_name_dct(spc_dct, incl_mult=False, incl_chg=False):
     """ get dct[ich] = name
     """
-    return {dct['inchi']: name for name, dct in spc_dct.items()}
+    def set_key(dct):
+        key = dct['inchi']
+        if incl_chg:
+            key = (key, dct['charge'],)
+            if incl_mult:
+                key += (dct['mult'],)
+        elif incl_mult:
+            key = (key, dct['mult'],)
+        return key
+    return {set_key(dct): name for name, dct in spc_dct.items()}
 
 
-def stereo_name_suffix(ich):
+def stereo_name_suffix(ich, enant_label=True):
     """ Parse the stereo from the InChI and write a string describing the
-        stereo that is present.
+        stereochemistry that is present.
+
+        :param enant_label: Include the enantiomer label?
+        :type enant_label: bool
     """
 
     ste_str = ''
 
     # Read the stereo chemistry from the InChI string
-    ste_slyrs = automol.inchi.stereo_sublayers(ich)
+    bnd_ste_par_dct = automol.chi.bond_stereo_parities(ich)
+    atm_ste_par_dct = automol.chi.atom_stereo_parities(ich)
 
-    tlyr = ste_slyrs.get('t')
-    blyr = ste_slyrs.get('b')
-    mlyr = ste_slyrs.get('m')
+    if bnd_ste_par_dct:
+        ste_str += ''.join('E' if p else 'Z'
+                           for _, p in sorted(bnd_ste_par_dct.items()))
 
-    # Write name strings that describe the E/Z stereochemistry
-    if blyr is not None:
-        # Determine if it is E or Z
-        if '+' in blyr and '-' in blyr:
-            _blyr = 'E'
+    if len(atm_ste_par_dct) > 1:
+        ste_str += ''.join('B' if p else 'A'
+                           for _, p in sorted(atm_ste_par_dct.items()))
+
+    if automol.chi.is_chiral(ich):
+        if not enant_label:
+            ste_str += '*'
         else:
-            _blyr = 'Z'
-        ste_str += _blyr
-
-    # Write name strings that describe the R/S stereochemistry
-    if tlyr is not None:
-        # (1) Replace: +=A -=B
-        # _tlyr = tlyr.replace('+', 'A').replace('-', 'B')
-        # _tlyr = _tlyr.replace(',', '')
-        # ste_str += _tlyr
-        # (2) Replace +=A -=B, remove the numbers
-        # Loop over characters of tetrahedral layer adding A/B from +/-
-        for char in tlyr:
-            if char == '-':
-                ste_str += 'A'
-            elif char == '+':
-                ste_str += 'B'
-
-        # Write additional label to describe enantiomer if needed
-        if 'm' in ste_slyrs:
-            # ste_str += '_' + mlyr
-            ste_str += mlyr
+            if automol.chi.is_inverted_enantiomer(ich):
+                ste_str += '1'
+            else:
+                ste_str += '0'
 
     return ste_str
 

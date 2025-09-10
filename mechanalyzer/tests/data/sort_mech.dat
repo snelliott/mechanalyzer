@@ -1,12 +1,10 @@
 isolate_submech # this section is not mandatory
-    species = (
         IC8
-    )
 end
 
 sort_mech
     criteria = (
-        submech
+        submech #extract submech of the fuel (fuel, r+o2..)
         subpes
         molecularity
         rxn_class_broad        

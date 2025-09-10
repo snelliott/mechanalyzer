@@ -1,9 +1,4 @@
-""" test mechanalyzer.calculator.statmodels
-    test mechanalyzer.calculator.bf
-    called by
-    mechanalyzer.builder.bf
-    mechanalyzer.builder.ped
-    similar structure to script in mechanalyzer_bin
+""" test mechanalyzer.calculator prompt functionalities
 """
 
 import os
@@ -11,8 +6,9 @@ import numpy as np
 from ioformat import pathtools, remove_comment_lines
 import autoparse.pattern as app
 import mess_io
-import mechanalyzer
-
+from mechanalyzer.calculator import spinfo_frommess
+from mechanalyzer.calculator import ene_partition
+from mechanalyzer.calculator import bf
 
 PATH = os.path.dirname(os.path.realpath(__file__))
 INP_PATH = os.path.join(PATH, 'data', 'prompt', 'C3H8_OH')
@@ -25,21 +21,17 @@ HOT_OUT = pathtools.read_file(INP_PATH, 'me_ktp_hoten.log')
 
 T = [400.0, 600.0, 800.0, 1200.0, 1800.0, 2000.0]
 P = [0.1, 1.0, 100.0]
-PEDSPECIES = [['C3H8+OH', 'CH3CH2CH2+H2O'], ['C3H8+OH', 'CH3CHCH3+H2O']]
 
 ENERGY_DCT = {'W0': -6.0, 'C3H8+OH': -2.2, 'CH3CH2CH2+H2O': -20.14, 'CH3CHCH3+H2O': -23.18,
               'B0': -2.2, 'B1': 0.0, 'B2': -0.89}
 
-ENE_BW_DCT = {(('C3H8+OH',), ('CH3CH2CH2+H2O',), (None,)): 17.94,
-              (('C3H8+OH',), ('CH3CHCH3+H2O',), (None,)): 20.98}
-
 KTP_DCT = {
-    (('C3H8+OH',), ('CH3CH2CH2+H2O',), (None,)): {
+    (('C3H8', 'OH',), ('CH3CH2CH2', 'H2O',), (None,)): {
         1.0: ((400.0, 600.0, 800.0, 1200.0, 1800.0, 2000.0),
               (5.14854e-13, 1.49542e-12, 2.95517e-12,
                7.33206e-12, 1.72203e-11, 2.12587e-11))
     },
-    (('C3H8+OH',), ('CH3CHCH3+H2O',), (None,)): {
+    (('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,)): {
         1.0: ((400.0, 600.0, 800.0, 1200.0, 1800.0, 2000.0),
               (1.8988e-13, 4.35041e-13, 7.7321e-13,
                1.73144e-12, 3.78948e-12, 4.61016e-12))
@@ -48,10 +40,6 @@ KTP_DCT = {
 
 LABELS = list(KTP_DCT.keys())
 
-FRAGMENTS_DCT = {
-    (('C3H8+OH',), ('CH3CH2CH2+H2O',), (None,)): ('CH3CH2CH2', 'H2O'),
-    (('C3H8+OH',), ('CH3CHCH3+H2O',), (None,)): ('CH3CHCH3', 'H2O')
-}
 
 FRAG_REACS = ('C3H8', 'OH')
 
@@ -72,10 +60,10 @@ def test_equip_simple():
 
     dof_dct, ped_dct, _, _, _ = _read_data()
 
-    ped_df_frag1_dct = mechanalyzer.builder.ped.ped_frag1(
-        ped_dct[(('C3H8+OH',), ('CH3CH2CH2+H2O',), (None,))
+    ped_df_frag1_dct = ene_partition.ped_frag1(
+        ped_dct[(('C3H8', 'OH',), ('CH3CH2CH2', 'H2O',), (None,))
                 ], 'CH3CH2CH2', 'H2O', 'equip_simple',
-        dof_info=dof_dct[(('C3H8+OH',), ('CH3CH2CH2+H2O',), (None,))])
+        dof_info=dof_dct[(('C3H8', 'OH',), ('CH3CH2CH2', 'H2O',), (None,))])
 
     ped_600 = ped_df_frag1_dct[1.0][600]
     ped_1200 = ped_df_frag1_dct[1.0][1200]
@@ -92,10 +80,10 @@ def test_equip_phi():
 
     dof_dct, ped_dct, _, _, _ = _read_data()
 
-    ped_df_frag1_dct = mechanalyzer.builder.ped.ped_frag1(
-        ped_dct[(('C3H8+OH',), ('CH3CH2CH2+H2O',), (None,))
+    ped_df_frag1_dct = ene_partition.ped_frag1(
+        ped_dct[(('C3H8', 'OH',), ('CH3CH2CH2', 'H2O',), (None,))
                 ], 'CH3CH2CH2', 'H2O', 'equip_phi',
-        dof_info=dof_dct[(('C3H8+OH',), ('CH3CH2CH2+H2O',), (None,))])
+        dof_info=dof_dct[(('C3H8', 'OH',), ('CH3CH2CH2', 'H2O',), (None,))])
     ped_600 = ped_df_frag1_dct[1.0][600]
     ped_1200 = ped_df_frag1_dct[1.0][1200]
 
@@ -111,10 +99,10 @@ def test_beta_phi1a():
 
     dof_dct, ped_dct, _, _, _ = _read_data()
 
-    ped_df_frag1_dct = mechanalyzer.builder.ped.ped_frag1(
-        ped_dct[(('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))
+    ped_df_frag1_dct = ene_partition.ped_frag1(
+        ped_dct[(('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))
                 ], 'CH3CHCH3', 'H2O', 'beta_phi1a',
-        dof_info=dof_dct[(('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))])
+        dof_info=dof_dct[(('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))])
     ped_400 = ped_df_frag1_dct[1.0][400]
     ped_800 = ped_df_frag1_dct[1.0][800]
 
@@ -130,10 +118,10 @@ def test_beta_phi2a():
 
     dof_dct, ped_dct, _, _, _ = _read_data()
 
-    ped_df_frag1_dct = mechanalyzer.builder.ped.ped_frag1(
-        ped_dct[(('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))
+    ped_df_frag1_dct = ene_partition.ped_frag1(
+        ped_dct[(('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))
                 ], 'CH3CHCH3', 'H2O', 'beta_phi2a',
-        dof_info=dof_dct[(('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))])
+        dof_info=dof_dct[(('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))])
     ped_400 = ped_df_frag1_dct[1.0][400]
     ped_800 = ped_df_frag1_dct[1.0][800]
 
@@ -149,10 +137,10 @@ def test_beta_phi3a():
 
     dof_dct, ped_dct, _, _, _ = _read_data()
 
-    ped_df_frag1_dct = mechanalyzer.builder.ped.ped_frag1(
-        ped_dct[(('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))
+    ped_df_frag1_dct = ene_partition.ped_frag1(
+        ped_dct[(('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))
                 ], 'CH3CHCH3', 'H2O', 'beta_phi3a',
-        dof_info=dof_dct[(('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))])
+        dof_info=dof_dct[(('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))])
     ped_400 = ped_df_frag1_dct[1.0][400]
     ped_800 = ped_df_frag1_dct[1.0][800]
 
@@ -168,17 +156,17 @@ def test_rovib_dos():
 
     dof_dct, ped_dct, dos_rovib, _, _ = _read_data()
 
-    ped_df_frag1_dct = mechanalyzer.builder.ped.ped_frag1(
-        ped_dct[(('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))
+    ped_df_frag1_dct = ene_partition.ped_frag1(
+        ped_dct[(('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))
                 ], 'CH3CHCH3', 'H2O', 'rovib_dos',
         dos_df=dos_rovib, dof_info=dof_dct[(
-            ('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))],
+            ('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))],
     )
     ped_1800 = ped_df_frag1_dct[1.0][1800]
     ped_2000 = ped_df_frag1_dct[1.0][2000]
 
-    assert np.isclose((ped_1800.iloc[166]), 0.0173, atol=1e-3, rtol=1e-2)
-    assert np.isclose((ped_2000.iloc[166]), 0.0148, atol=1e-3, rtol=1e-2)
+    assert np.isclose((ped_1800.iloc[166]), 0.01985, atol=1e-3, rtol=1e-2)
+    assert np.isclose((ped_2000.iloc[166]), 0.01724, atol=1e-3, rtol=1e-2)
     assert np.isclose(np.trapz(ped_1800.values, x=ped_1800.index), 1)
     assert np.isclose(np.trapz(ped_2000.values, x=ped_2000.index), 1)
 
@@ -189,11 +177,11 @@ def test_thermal():
 
     dof_dct, ped_dct, dos_rovib, _, _ = _read_data()
 
-    ped_df_frag1_dct = mechanalyzer.builder.ped.ped_frag1(
-        ped_dct[(('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))
+    ped_df_frag1_dct = ene_partition.ped_frag1(
+        ped_dct[(('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))
                 ], 'CH3CHCH3', 'H2O', 'thermal',
         dos_df=dos_rovib, dof_info=dof_dct[(
-            ('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))])
+            ('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))])
     ped_1800 = ped_df_frag1_dct[1.0][1800]
     ped_2000 = ped_df_frag1_dct[1.0][2000]
 
@@ -204,18 +192,18 @@ def test_thermal():
 
 
 def test_bf_from_phi1a():
-    """ test builder.bf.bf_tp_dct
+    """ test calculator.bf.bf_tp_dct
         calls calculator.bf.bf_tp_df_full, bf_tp_df_todct
     """
 
     dof_dct, ped_dct, _, hoten_dct, _ = _read_data()
 
-    ped_df_frag1_dct = mechanalyzer.builder.ped.ped_frag1(
-        ped_dct[(('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))
+    ped_df_frag1_dct = ene_partition.ped_frag1(
+        ped_dct[(('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))
                 ], 'CH3CHCH3', 'H2O', 'beta_phi1a',
-        dof_info=dof_dct[(('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))])
+        dof_info=dof_dct[(('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))])
 
-    bf_tp_dct = mechanalyzer.builder.bf.bf_tp_dct(
+    bf_tp_dct = bf.bf_tp_dct(
         'beta_phi1a', ped_df_frag1_dct, hoten_dct['CH3CHCH3'], 0.1)
 
     assert np.allclose(
@@ -235,62 +223,64 @@ def test_bf_from_phi1a():
 
 
 def test_bf_from_fne():
-    """ test builder.bf.bf_tp_dct
+    """ test calculator.bf.bf_tp_dct
         calls calculator.bf.bf_tp_df_full, bf_tp_df_todct
     """
     _, _, _, _, fne_bf = _read_data()
-    bf_tp_dct = mechanalyzer.builder.bf.bf_tp_dct(
+    bf_tp_dct = bf.bf_tp_dct(
         'fne', None, None, 0.1, fne=fne_bf['CH3CHCH3'])
 
     assert np.allclose(
-        bf_tp_dct['CH3CHCH3'][1.0][1],
+        bf_tp_dct['CH3CHCH3'][1.0][1][[0, 6, 14]],
         np.array([1., 0.99999987, 0.99798199]), atol=1e-3, rtol=1e-2)
     assert np.allclose(
-        bf_tp_dct['CH3CHCH3'][100.0][1],
+        bf_tp_dct['CH3CHCH3'][100.0][1][[0, 6, 12, -5, -1]],
         np.array([1., 1., 0.99999238, 0.98542176, 0.94370273]), atol=1e-3, rtol=1e-2)
     assert np.allclose(
-        bf_tp_dct['CH3CHCH2+H'][1.0][1][-3:],
+        bf_tp_dct['CH3CHCH2+H'][1.0][1][[16, -1, -1]],
         np.array([1.99996390e-03, 9.89494747e-01, 9.87394958e-01]), atol=1e-3, rtol=1e-2)
     assert np.allclose(
-        bf_tp_dct['CH3CHCH2+H'][100.0][1][-2:],
+        bf_tp_dct['CH3CHCH2+H'][100.0][1][[-5, -1]],
         np.array([1.42060802e-02, 5.47827434e-02]), atol=1e-3, rtol=1e-2)
 
 
 def test_new_ktp_dct():
-    """ test builder.bf.merge_bf_ktp
+    """ test calculator.bf.merge_bf_ktp
         calls calculator.bf.merge_bf_rates
-        calls builder.bf.rename_ktp_dct
+        calls calculator.bf.rename_ktp_dct
     """
 
     dof_dct, ped_dct, _, hoten_dct, _ = _read_data()
 
-    ped_df_frag1_dct = mechanalyzer.builder.ped.ped_frag1(
-        ped_dct[(('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))
+    ped_df_frag1_dct = ene_partition.ped_frag1(
+        ped_dct[(('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))
                 ], 'CH3CHCH3', 'H2O', 'equip_simple',
-        dof_info=dof_dct[(('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))])
+        dof_info=dof_dct[(('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))])
 
-    bf_tp_dct = mechanalyzer.builder.bf.bf_tp_dct(
+    bf_tp_dct = bf.bf_tp_dct(
         'equip_simple', ped_df_frag1_dct, hoten_dct['CH3CHCH3'], 0.01)
 
-    rxn_ktp_dct = mechanalyzer.builder.bf.merge_bf_ktp(
-        bf_tp_dct, KTP_DCT[(('C3H8+OH',), ('CH3CHCH3+H2O',), (None,))],
-        FRAG_REACS, ('H2O',), HOT_FRAG_DCT)
+    rxn_ktp_dct = bf.merge_bf_ktp(
+        bf_tp_dct, KTP_DCT[(('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,))],
+        (('C3H8', 'OH',), ('CH3CHCH3', 'H2O',), (None,)), HOT_FRAG_DCT)
 
     rxn1 = (('C3H8', 'OH'), ('CH3CHCH3', 'H2O'), (None,))
-    rxn2 = (('C3H8', 'OH'), ('CH3CHCH2', 'H', 'H2O'), (None,))
-    rxn3 = (('C3H8', 'OH'), ('C2H4', 'CH3', 'H2O'), (None,))
+    rxn2 = (('C3H8', 'OH'), ('H2O', 'CH3CHCH2', 'H'), (None,))
+    rxn3 = (('C3H8', 'OH'), ('H2O', 'C2H4', 'CH3'), (None,))
 
     assert np.allclose(
         rxn_ktp_dct[rxn1][1.0][1],
         np.array([1.89880000e-13, 4.35037052e-13, 7.71806509e-13, 1.43693675e-12]))
+    
     assert np.allclose(
         rxn_ktp_dct[rxn2][1.0][1],
         np.array([2.51727819e-23, 3.94444858e-18, 1.39868122e-15, 2.91984766e-13,
                   3.72843123e-12, 4.51618523e-12]))
+
     assert np.allclose(
         rxn_ktp_dct[rxn3][1.0][1],
-        np.array([1.17577343e-21, 3.37276252e-18, 2.37099776e-15, 6.10487657e-14,
-                  9.39747652e-14]))
+        np.array([5.41734589e-28, 1.39726840e-21, 3.37227513e-18, 2.35907806e-15,
+                  6.10487527e-14, 9.39747611e-14]))
 
 
 def _read_data():
@@ -302,13 +292,13 @@ def _read_data():
 
     dof_dct = {}
     for label in LABELS:
-        prods = label[1][0]
-        # NB FCT TESTED IN TEST__CALC_STATMODELS
-        dof_dct[label] = mechanalyzer.calculator.statmodels.get_dof_info(
+        prods = '+'.join(label[1])
+        # NB FCT TESTED IN TEST__CALC_SPINFO
+        dof_dct[label] = spinfo_frommess.get_info(
             spc_blocks_ped[prods])
     # GET PED
     ped_dct = mess_io.reader.ped.get_ped(
-        PED_OUT, PEDSPECIES, ENERGY_DCT)
+        PED_OUT, ENERGY_DCT)
     # GET DOS
     dos_rovib = mess_io.reader.rates.dos_rovib(KE_PED_OUT)
     # HOTEN
@@ -329,5 +319,5 @@ if __name__ == '__main__':
     test_thermal()
     test_bf_from_phi1a()
     test_bf_from_fne()
-    test_rovib_dos()
     test_new_ktp_dct()
+    test_rovib_dos()

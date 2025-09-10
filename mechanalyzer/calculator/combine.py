@@ -20,7 +20,7 @@ def comb_mechs(rxn_param_dct1, rxn_param_dct2, spc_nasa7_dct1, spc_nasa7_dct2,
 
     # Get the instructions for renaming the species
     print('Inside comb_mechs: getting rename instructions...')
-    rename_instr = compare.get_rename_instr_v2(
+    rename_instr = compare.get_rename_instr(
         mech_spc_dct1, mech_spc_dct2, strip_ste=strip_ste)
 
     print('first set of rename_instr:\n', rename_instr)
@@ -28,7 +28,7 @@ def comb_mechs(rxn_param_dct1, rxn_param_dct2, spc_nasa7_dct1, spc_nasa7_dct2,
     # If indicated, do some stereo checks, etc.
     if ste_mech1_only:
         # Note the flipped order
-        ste_instr = compare.get_rename_instr_v2(mech_spc_dct2, mech_spc_dct1,
+        ste_instr = compare.get_rename_instr(mech_spc_dct2, mech_spc_dct1,
                                                 strip_ste=True)
         print('second set of rename_instr (ste_instr):\n', ste_instr)
         _, ste_dct = compare.rename_species(rxn_param_dct1, ste_instr, 'rxn')
@@ -43,22 +43,27 @@ def comb_mechs(rxn_param_dct1, rxn_param_dct2, spc_nasa7_dct1, spc_nasa7_dct2,
                                    ste_dct=ste_dct)
     comb_spc_nasa7_dct = comb_dcts(spc_nasa7_dct1, spc_nasa7_dct2,
                                    rename_instr, target_type='spc')
-    comb_mech_spc_dct = comb_dcts(mech_spc_dct1, mech_spc_dct2, 
+    comb_mech_spc_dct = comb_dcts(mech_spc_dct1, mech_spc_dct2,
                                   rename_instr, target_type='spc')
 
     #print('Inside comb_mechs: comb_mech_spc_dct:\n', comb_mech_spc_dct)
 
     return comb_rxn_param_dct, comb_spc_nasa7_dct, comb_mech_spc_dct
 
-# In progress...
-#def comb_mult_dcts(dcts, rename_instrs, target_types='rxn', ste_dcts=None):
-#
-#    ncombs = len(dcts) - 1  # n-1 combinations to do
-#    comb_dct = copy.deepcopy(dcts[0])
-#    for idx in range(len(dcts) - 1)):  # n-1 combinations to do
-#        
-#        comb_dct = comb_
 
+def comb_mult_mechs(rxn_param_dcts, spc_nasa7_dcts, mech_spc_dcts):
+
+    tot_rxn_param_dct = copy.deepcopy(rxn_param_dcts[0])
+    tot_spc_nasa7_dct = copy.deepcopy(spc_nasa7_dcts[0])
+    tot_mech_spc_dct = copy.deepcopy(mech_spc_dcts[0])
+    ncombs = len(dcts) - 1  # n-1 combinations to do
+    for idx in range(ncombs):
+        tot_rxn_param_dct, tot_spc_nasa7_dct, tot_mech_spc_dct = comb_mechs(
+            tot_rxn_param_dct, rxn_param_dcts[idx+1],
+            tot_spc_nasa7_dct, spc_nasa7_dcts[idx+1],
+            tot_mech_spc_dct, mech_spc_dcts[idx+1])
+
+    return tot_rxn_param_dct, tot_spc_nasa7_dct, tot_mech_spc_dct
 
 
 def comb_dcts(dct1, dct2, rename_instr, target_type='rxn', ste_dct=None):
@@ -85,14 +90,12 @@ def comb_dcts(dct1, dct2, rename_instr, target_type='rxn', ste_dct=None):
     # Fix reactions that have one or more stereoisomers but are not in dct1
     #if target_type == 'rxn':
     #    for rxn, params in renamed_dct2.items():
-    #         remap_dct = _remap_dct(rxn, rename_instr, ste_spc_dct)    
+    #         remap_dct = _remap_dct(rxn, rename_instr, ste_spc_dct)
 
     # Add renamed and cleaned up dct2 to the combined dct
     comb_dct = copy.deepcopy(dct1)  # combined dct is initially just dct1
-    #print('comb_dct before adding dct2:\n', comb_dct)
     for key, value in renamed_dct2.items():
         comb_dct[key] = value
-    #print('comb_dct after adding dct2:\n', comb_dct)
 
     return comb_dct
 
@@ -100,7 +103,7 @@ def comb_dcts(dct1, dct2, rename_instr, target_type='rxn', ste_dct=None):
 def _remap_dct(rxn, rename_instr, ste_spc_dct):
 
     def check_spcs(spcs, remap_dct):
-    
+
         remap_dct = copy.deepcopy(remap_dct)
         for spc in spcs:
             for non_ste_spc, ste_spc_list in ste_spc_dct.items():
@@ -109,16 +112,16 @@ def _remap_dct(rxn, rename_instr, ste_spc_dct):
                     break  # stop looking through the ste_spc_dct
 
         return remap_dct
-        
+
     rcts, prds, _ = rxn
     remap_dct = {}
-    remap_dct = check_spcs(rcts, remap_dct)   
-    remap_dct = check_spcs(prds, remap_dct)   
+    remap_dct = check_spcs(rcts, remap_dct)
+    remap_dct = check_spcs(prds, remap_dct)
     if remap_dct == {}:
         remap_dct = None
 
     return remap_dct
-    
+
 
 
 

@@ -8,7 +8,9 @@ import numpy
 from phydat import phycon
 from chemkin_io.writer import _util as writer_util
 import ratefit
-from automol.inchi import without_stereo
+from automol.chi import without_stereo
+from ioformat import pathtools
+from mechanalyzer.parser import spc as spc_parser
 
 RC_CAL = phycon.RC_CAL  # universal gas constant in cal/mol-K
 
@@ -88,13 +90,11 @@ def get_algn_spc_therm_dct(spc_therm_dcts, mech_spc_dcts, remove_loners=True,
     """
     assert len(spc_therm_dcts) == len(mech_spc_dcts), (
         f'Lengths of spc_therm_dcts ({len(spc_therm_dcts)}) ' +
-        f'and mech_spc_dcts ({len(mech_spc_dcts)}) should be the same.'
-        )
+        f'and mech_spc_dcts ({len(mech_spc_dcts)}) should be the same.')
 
     # Get the renamed spc_therm_dct
     renamed_spc_therm_dcts, rename_instr_lst = rename_dcts(
-        spc_therm_dcts, mech_spc_dcts, target_type='spc'
-    )
+        spc_therm_dcts, mech_spc_dcts, target_type='spc')
 
     # Get the algn_rxn_ktp_dct
     algn_spc_therm_dct = align_dcts(renamed_spc_therm_dcts)
@@ -246,96 +246,56 @@ def rename_dcts(target_dcts, mech_spc_dcts, target_type):
     return renamed_target_dcts, rename_instr_lst
 
 
-def get_rename_instr(mech_spc_dct1, mech_spc_dct2, strip_ste=False):
-    """ Get instructions for renaming mech_spc_dct2 to be consistent with mech_spc_dct1
+def get_rename_instr(mech_spc_dct1, mech_spc_dct2, strip_ste=True):
+    """ Get instructions for renaming mech_spc_dct2 to be consistent with
+        mech_spc_dct1
 
         :param mech_spc_dct1: the reference mech_spc_dct
         :type mech_spc_dct1: dct {spc1: ident_array1, spc2: ...}
         :param mech_spc_dct2: the mech_spc_dct to be renamed
         :type mech_spc_dct2: dct {spc1: ident_array1, spc2: ...}
-        :return rename_instr: instructions for renaming the species in mech_spc_dct2
-        :rtype: dct {spc_to_be_renamed1: new_spc_name1, spc_to_be_renamed2: ...}
+        :return rename_instr: instructions for renaming spcs in mech_spc_dct2
+        :rtype: dct {spc_to_be_renamed1: new_name1, ...}
     """
 
     rename_instr = {}
     rename_str = '-zz'
-
-    # Loop through each species in mech1
-    for spc_name1, spc_vals1 in mech_spc_dct1.items():
-        ich1 = spc_vals1['inchi']
-        mlt1 = spc_vals1['mult']
-        chg1 = spc_vals1['charge']
-        # Look for some stereo things
-        if strip_ste:  # strip stereo layer(s) if indicated
-            ich1 = without_stereo(ich1)
-
-        for spc_name2, spc_vals2 in mech_spc_dct2.items():
-            ich2 = spc_vals2['inchi']
-            mlt2 = spc_vals2['mult']
-            chg2 = spc_vals2['charge']
-
-            if strip_ste:  # strip stereo layer(s) if indicated
-                ich2 = without_stereo(ich2)
-
-            # If species are identical
-            if ich1 == ich2 and mlt1 == mlt2 and chg1 == chg2:
-                if spc_name1 != spc_name2:  # if spc names different, add to rename instructions
-                    rename_instr[spc_name2] = spc_name1
-
-            # If species are different but have same name
-            elif spc_name1 == spc_name2:
-                rename_instr[spc_name2] = spc_name2 + rename_str
-
-    return rename_instr
-
-
-def get_rename_instr_v2(mech_spc_dct1, mech_spc_dct2, strip_ste=False):
-    """ Get instructions for renaming mech_spc_dct2 to be consistent with mech_spc_dct1
-
-        :param mech_spc_dct1: the reference mech_spc_dct
-        :type mech_spc_dct1: dct {spc1: ident_array1, spc2: ...}
-        :param mech_spc_dct2: the mech_spc_dct to be renamed
-        :type mech_spc_dct2: dct {spc1: ident_array1, spc2: ...}
-        :return rename_instr: instructions for renaming the species in mech_spc_dct2
-        :rtype: dct {spc_to_be_renamed1: new_spc_name1, spc_to_be_renamed2: ...}
-    """
-
-    rename_instr = {}
-    rename_str = '-zz'
+    already_done = []
 
     # Loop through each species in mech1
     for spc1, spc_dct1 in mech_spc_dct1.items():
-        ich1 = spc_dct1['inchi']
-        mlt1 = spc_dct1['mult']
-        chg1 = spc_dct1['charge']
-        exc1 = spc_dct1['exc_flag']
-        fml1 = spc_dct1['fml']
-
+        ich1, mlt1, chg1, exc1, fml1 = _read_spc_dct(spc_dct1)
         # Strip stereo layer(s) if indicated
         if strip_ste:
             ich1 = without_stereo(ich1)
-
+        # Loop over each spc in mech_spc_dct2
         for spc2, spc_dct2 in mech_spc_dct2.items():
-            # If species are identical
-            spc_same = are_spc_same(ich1, mlt1, chg1, exc1, fml1, spc_dct2, 
+            # First, check if the species has already been done
+            if spc2 in already_done:
+                continue  # skip everything below and go to next spc2
+            # Check if species are identical
+            spc_same = are_spc_same(ich1, mlt1, chg1, exc1, fml1, spc_dct2,
                                     strip_ste=strip_ste)
+            # If species are identical
             if spc_same:
                 if spc1 != spc2:  # if spc names different, add to rename_instr
                     rename_instr[spc2] = spc1
-
+                    already_done.append(spc2)
             # If species are different but have same name
             elif spc1 == spc2:
                 rename_instr[spc2] = spc2 + rename_str
+                # Note: don't add to already_done; this works for now
 
     return rename_instr
 
 
-def are_spc_same(ich1, mlt1, chg1, exc1, fml1, spc_dct2, strip_ste=False):
-    """ Compares two species to see if they are the same
+def are_spc_same(ich1, mlt1, chg1, exc1, fml1, spc_dct2, strip_ste=False,
+                 canon_ent=False):
+    """ Compares two species dictionaries to see if they are the same
 
         Note: inputting spc1 in pieces for faster implementation in loop
     """
-    
+
     def are_fml_same(fml1, fml2):
         """ Compares two formula dictionaries to see if they are the same
         """
@@ -346,13 +306,10 @@ def are_spc_same(ich1, mlt1, chg1, exc1, fml1, spc_dct2, strip_ste=False):
                 return False
         # If the for loop is completed without returning False, return True
         return True
-    
-    # Load spc2 information
-    ich2 = spc_dct2['inchi']
-    mlt2 = spc_dct2['mult']
-    chg2 = spc_dct2['charge']
-    exc2 = spc_dct2['exc_flag']
-    fml2 = spc_dct2['fml']
+
+    # Load information
+    ich2, mlt2, chg2, exc2, fml2 = _read_spc_dct(
+        spc_dct2, canon_ent=canon_ent)
 
     # Check a few easy things
     if mlt1 != mlt2:
@@ -370,7 +327,7 @@ def are_spc_same(ich1, mlt1, chg1, exc1, fml1, spc_dct2, strip_ste=False):
     if ich1 != ich2:
         return False
     return True
-        
+
 
 def get_comb_mech_spc_dct(mech_spc_dct1, mech_spc_dct2):
     """ Combine two mech_spc_dcts by adding to mech_spc_dct1 any spcs unique to mech_spc_dct2
@@ -439,6 +396,7 @@ def rename_species(target_dct, rename_instr, target_type='rxn'):
         :type target_type: str
         :return renamed_dct: dct with all species renamed according to the rename_instr
         :rtype: dct; either a rxn_ktp, rxn_param, or thermo dct
+        :return ste_dct: dct for describing naming redundancies that have been introduced
     """
     def strip_third_bod(third_bod):
         """ Strip away the '(', '+', and ')' from a third body
@@ -542,26 +500,26 @@ def reverse_rxn_ktp_dcts(renamed_rxn_ktp_dcts, renamed_spc_therm_dcts, temps, re
     reversed_rxn_ktp_dcts = copy.deepcopy(renamed_rxn_ktp_dcts)  # deepcopy so no external changes
     for mech_idx in range(num_mechs-1):
         rxn_ktp_dct1 = renamed_rxn_ktp_dcts[mech_idx]
-        for idx2 in range(mech_idx+1, num_mechs):
-            rxn_ktp_dct2 = renamed_rxn_ktp_dcts[idx2]
+        for mech_idx2 in range(mech_idx+1, num_mechs):
+            rxn_ktp_dct2 = renamed_rxn_ktp_dcts[mech_idx2]
 
             # If reversing rates, get thermo; otherwise, just get a blank list
             if rev_rates:
-                spc_therm_dct1 = renamed_spc_therm_dcts[mech_idx]
+                spc_therm_dct2 = renamed_spc_therm_dcts[mech_idx2]
             else:
-                spc_therm_dct1 = []
+                spc_therm_dct2 = []
 
             # Either reverse rxns (if rev_rates=True) or just flip the products and reactants to
             # be in the same order
             reversed_rxn_ktp_dct = reverse_rxn_ktp_dct(
-                rxn_ktp_dct1, rxn_ktp_dct2, spc_therm_dct1, temps, rev_rates=rev_rates
+                rxn_ktp_dct1, rxn_ktp_dct2, spc_therm_dct2, temps, rev_rates=rev_rates
             )
-            reversed_rxn_ktp_dcts[idx2] = reversed_rxn_ktp_dct
+            reversed_rxn_ktp_dcts[mech_idx2] = reversed_rxn_ktp_dct
 
     return reversed_rxn_ktp_dcts
 
 
-def reverse_rxn_ktp_dct(rxn_ktp_dct1, rxn_ktp_dct2, spc_therm_dct1, temps, rev_rates=True):
+def reverse_rxn_ktp_dct(rxn_ktp_dct1, rxn_ktp_dct2, spc_therm_dct2, temps, rev_rates=True):
     """ Takes two rxn_ktp_dcts whose species have already been renamed to be identical and reverses
         any reactions *in the second dct* that need to be reversed
 
@@ -569,8 +527,8 @@ def reverse_rxn_ktp_dct(rxn_ktp_dct1, rxn_ktp_dct2, spc_therm_dct1, temps, rev_r
         :type rxn_ktp_dct1: dict {rxn1: ktp_dct1, rxn2: ...}
         :param rxn_ktp_dct2: rxn_ktp_dct for mech2
         :type rxn_ktp_dct2: dict {rxn1: ktp_dct1, rxn2: ...}
-        :param spc_therm_dct1: spc_therm_dct for mech1
-        :type spc_therm_dct1: dict {spc1: thermo_array1, spc2: ...}
+        :param spc_therm_dct2: spc_therm_dct for mech2
+        :type spc_therm_dct2: dict {spc1: thermo_array1, spc2: ...}
         :param temps: temperatures at which to do calculations (Kelvin)
         :type temps: list [float]
         :param rev_rates: whether or not rates should be reversed
@@ -580,12 +538,12 @@ def reverse_rxn_ktp_dct(rxn_ktp_dct1, rxn_ktp_dct2, spc_therm_dct1, temps, rev_r
     for rxn1 in rxn_ktp_dct1.keys():  # search through all rxns in rxn_ktp_dct1
         rxn2, rev_rate = assess_rxn_match(rxn1, rxn_ktp_dct2)
         # Only do something if a match was found
-        if rxn2 is not None:
+        if rxn2 is not None and rxn2 in rev_rxn_ktp_dct2:
             # If the user indicated to reverse rates, check if they need to be
             if rev_rates:
                 if rev_rate:
                     ktp_dct2 = rxn_ktp_dct2[rxn2]
-                    rev_ktp_dct2 = reverse_ktp_dct(ktp_dct2, spc_therm_dct1, rxn2, temps)
+                    rev_ktp_dct2 = reverse_ktp_dct(ktp_dct2, spc_therm_dct2, rxn2, temps)
                     rev_rxn_ktp_dct2.pop(rxn2)
                     rev_rxn_ktp_dct2[rxn1] = rev_ktp_dct2
                 # If a match was found that does not need to be reversed but has rcts and prds
@@ -664,17 +622,16 @@ def assess_rxn_match(rxn1, rxn_ktp_dct2):
 
     def check_third_bod(third_bod1, third_bod2):
         """ Checks if two third bodies are the same. Accounts for the case
-            where one is None and the other is '(+M)'
+            where one is None and the other is '(+M)' or '+M'
         """
 
+        are_same = False
         if third_bod1 == third_bod2:
             are_same = True
-        elif third_bod1 is None and third_bod2 == '(+M)':
+        elif third_bod1 is None and third_bod2 in ('(+M)', '+M'):
             are_same = True
-        elif third_bod1 == '(+M)' and third_bod2 is None:
+        elif third_bod1 in ('(+M)', '+M') and third_bod2 is None:
             are_same = True
-        else:
-            are_same = False
 
         return are_same
 
@@ -735,7 +692,10 @@ def _calculate_equilibrium_constant(spc_therm_dct, rcts, prds, temps):
     for temp_idx, temp in enumerate(temps):
         rct_gibbs = 0.0
         for rct in rcts:
-            rct_gibbs += spc_therm_dct[rct][4][temp_idx]  # [4] accesses Gibbs
+            try:
+                rct_gibbs += spc_therm_dct[rct][4][temp_idx]  # [4] accesses Gibbs
+            except:
+                breakpoint()
 
         prd_gibbs = 0.0
         for prd in prds:
@@ -745,3 +705,79 @@ def _calculate_equilibrium_constant(spc_therm_dct, rcts, prds, temps):
         k_equils.append(numpy.exp(-rxn_gibbs / (RC_CAL * temp)))
 
     return k_equils
+
+
+def write_comparison(algn_dct, dct_type='rxn', buffer=4):
+
+    if dct_type == 'rxn':
+        max_len = writer_util.max_rxn_length(algn_dct)
+    else:  # 'therm'
+        max_len = writer_util.max_spc_length(algn_dct)
+
+    fstr = ''
+    for key, mech_items in algn_dct.items():
+        if dct_type == 'rxn':
+            key = writer_util.format_rxn_name(key)
+        fstr += f'{key:<{max_len + buffer}}'
+        for mech_item in mech_items:
+            if mech_item is None:
+                entry = '---'
+            else:
+                entry = ' Y '
+            fstr += f'{entry:<{3 + buffer}}'
+        fstr += '\n'
+
+    return fstr
+
+def _read_spc_dct(spc_dct, canon_ent=False):
+    """ Reads the relevant info for comparing species
+    """
+
+    if canon_ent:
+        ich = spc_dct['canon_enant_ich']
+    else:
+        ich = spc_dct['inchi']
+    mlt = spc_dct['mult']
+    chg = spc_dct['charge']
+    exc = spc_dct['exc_flag']
+    fml = spc_dct['fml']
+
+    return ich, mlt, chg, exc, fml
+
+
+def write_ordered_str(algn_dct, dct_type='rxn', comb_mech_spc_dct=None,
+                      print_missing=False):
+    """ Writes the results of a comparison to a text file, in order
+    """
+    def _ordered_mech_spc_dct(algn_therm_dct, comb_mech_spc_dct, print_missing):
+        """ Creates a mech_spc_dct in the same order as the aligned thermo
+        """
+        ordered_mech_spc_dct = {}
+        for spc in algn_therm_dct.keys():
+            if comb_mech_spc_dct.get(spc) is not None:
+                ordered_mech_spc_dct[spc] = comb_mech_spc_dct[spc]
+            # If spc not in the combined dct and if print_missing is True
+            elif print_missing:  # if spc not in the combined dct and i
+                print(f'{spc} has no info in the mech_spc_dct; skipping...')
+
+        return ordered_mech_spc_dct
+
+    fstr = ''
+    if dct_type == 'rxn':
+        for rxn in algn_dct.keys():
+            fstr += f'writer_util.format_rxn_name(rxn)\n'
+    elif dct_type == 'therm':
+        if comb_mech_spc_dct is None:  # if no mech_spc_dct, simply write spcs
+            for spc in algn_dct.keys():
+                fstr += f'{spc}\n'
+        else:  # if mech_spc_dct given, write a spc.csv
+            ordered_mech_spc_dct = _ordered_mech_spc_dct(
+                algn_dct, comb_mech_spc_dct, print_missing=print_missing)
+            headers=('smiles', 'inchi', 'mult', 'charge', 'exc_flag')
+            fstr = spc_parser.csv_string(ordered_mech_spc_dct, headers)
+    else:
+        raise NotImplementedError(f'dct_type {dct_type} not valid!')
+
+    return fstr
+
+

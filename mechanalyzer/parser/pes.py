@@ -5,15 +5,11 @@ Extract PES and SUBPESs from a given mechanism
 import pandas as pd
 import numpy
 from mechanalyzer.parser._util import order_rct_bystoich
-import automol.inchi
-import automol.formula
-from mechanalyzer.parser import pes
+import automol.chi
+import automol.form
 from mechanalyzer.parser.ckin_ import parse_pes_dct
-from mechanalyzer.parser.mech import parse_mechanism
-from mechanalyzer.builder import sorter
 
-
-def pes_dictionary(mech_str, mech_type, spc_dct, printlog=True):
+def pes_dictionary(mech_str, spc_dct):
     """ Constructs the Potential-Energy-Surface dictionary for all of the
         channels of the user input utilizing the sorter functionality
         from mechanalyzer. Currently, we sort just via PES and then SUB-PES.
@@ -36,14 +32,10 @@ def pes_dictionary(mech_str, mech_type, spc_dct, printlog=True):
         for (_, pes_idx, subpes_idx), chnls in pes_dct.items():
             rcts = chnls[0][1][0]
             rct_ichs = tuple(spc_dct[rct]['inchi'] for rct in rcts)
-            rct_ich = automol.inchi.join(rct_ichs)
-            fml = automol.formula.string(automol.inchi.formula(rct_ich))
+            rct_ich = automol.chi.join(rct_ichs)
+            fml = automol.form.string(automol.chi.formula(rct_ich))
             new_pes_dct[(fml, pes_idx, subpes_idx)] = chnls
         return new_pes_dct
-
-    # Initialize values used for the basic PES-SUBPES sorting
-    sort_str = ['pes', 'subpes', 0]
-    isolate_species = ()
 
     # Build and print the full sorted PES dict
     pes_dct = None
@@ -53,19 +45,9 @@ def pes_dictionary(mech_str, mech_type, spc_dct, printlog=True):
         pes_dct = parse_pes_dct(mech_str)
 
         # If that fails then try and read a file normally and sort it
-        if pes_dct is None:
-            rxn_param_dct = parse_mechanism(mech_str, mech_type)
-            if rxn_param_dct is not None:
-                srt_mch = sorter.sorting(
-                    rxn_param_dct, spc_dct, sort_str, isolate_species)
-                pes_dct = srt_mch.return_pes_dct()
-        else:
+        if pes_dct is not None:
             pes_dct = _fix_formula(pes_dct, spc_dct)
             print('Building PES dictionary from input file specification')
-
-    if pes_dct is not None:
-        if printlog:
-            pes.print_pes_channels(pes_dct)
 
     return pes_dct
 

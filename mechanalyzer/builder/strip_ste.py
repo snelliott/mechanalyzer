@@ -1,124 +1,276 @@
+""" Removes stereo-specific species and rates from a mechanism by averaging or
+    adding rate constants as needed
+"""
+
 import copy
-from mechanalyzer import builder
 from mechanalyzer.calculator import compare
-from mechanalyzer.calculator import combine
 from mechanalyzer.calculator import rates
+from mechanalyzer.calculator.rates import check_p_t
+from mechanalyzer.builder import _names as names
 from ratefit.fit import _fit as fit
 from automol import inchi
+from automol import chi
 
 
-# Step 10
-def comb_strpd_and_no_ste(re_mech_spc_dct, re_rxn_param_dct,
-                             mech_spc_dct_no_ste, rxn_param_dct_no_ste):
+def main(rxn_param_dct, mech_spc_dct, temps_lst, pressures):
+    """ Main function; removes stereo from reactions and species and averages
+        or adds rate constants as appropriate
 
-
-#    comb_rxn_param_dct, comb_spc_nasa7_dct, _ = combine.comb_mechs(
-#        re_rxn_param_dct, rxn_param_dct_no_ste,
-
-    re_mech_spc_dct_comb = copy.deepcopy(re_mech_spc_dct)
-    re_rxn_param_dct_comb = copy.deepcopy(re_rxn_param_dct)
-
-    re_mech_spc_dct_comb.update(mech_spc_dct_no_ste)
-    re_rxn_param_dct_comb.update(rxn_param_dct_no_ste)
-
-    return re_mech_spc_dct_comb, re_rxn_param_dct_comb
-
-
-# Step 9
-def regenerate_names(mech_spc_dct_strpd_ich, rxn_param_dct_strpd):
-    """ Takes the dcts in terms of inchis and regenerates names, then renames
+        :param rxn_param_dct: rxn_param_dct with possible stereoisomers
+        :type rxn_param_dct: {rxn: params, ...}
+        :param mech_spc_dct: mech_spc_dct with possible stereoisomers
+        :type mech_spc_dct: {spc: spc_dct, ...}
+        :param temps_lst: temp arrays, one per pressure, for fitting (K)
+        :type temps_lst: [np.array1, np.array2, ...]
+        :param pressures: pressures for fitting (atm)
+        :type pressures: list
+        :return re_rxn_param_dct_comb: rxns with all stereo rates averaged
+        :rtype: {rxn: params, ...}
+        :return re_mech_spc_dct_comb: spcs with all stereo removed
+        :rtype: {spc: spc_dct, ...}
     """
 
-    map_dct = builder.functional_group_name_dct(mech_spc_dct_strpd_ich)
-    re_mech_spc_dct, re_rxn_param_dct = builder.remap_mechanism_names(
-        mech_spc_dct_strpd_ich, rxn_param_dct_strpd, map_dct)
+    print('rxn_param_dct:\n', rxn_param_dct)
+    print('mech_spc_dct:\n', mech_spc_dct)
+
+    # Check/reform temps list
+    temps_lst = check_p_t(temps_lst, pressures)
+
+    # Strip stereo layers from inchis and save non-stereo spcs for later
+    mech_spc_dct_strpd, mech_spc_dct_no_ste = strip_mech_spc_dct(mech_spc_dct)
+    print('mech_spc_dct_strpd:\n', mech_spc_dct_strpd)
+    print('mech_spc_dct_no_ste:\n', mech_spc_dct_no_ste)
+
+    # Get the iso_sets, i.e., the sets of species that are stereoisomers
+    iso_sets = find_iso_sets(mech_spc_dct_strpd)
+    print('iso_sets:\n', iso_sets)
+
+    # Rename mech spc_dct to have the spc names be (stereo-stripped) inchis
+    mech_spc_dct_strpd_ich = make_mech_spc_dct_ich(
+        iso_sets, mech_spc_dct_strpd)
+    print('mech_spc_dct_strpd_ich:\n', mech_spc_dct_strpd_ich)
+
+    # Get the reactions and params for each iso in each iso set
+    iso_sets_rxns = get_ste_rxns(rxn_param_dct, iso_sets)
+    print('iso_sets_rxns:\n', iso_sets_rxns)
+
+    # Rename the stereo species to stereo-stripped and get the aligned params
+    algn_iso_sets_rxns = align_rxns(iso_sets_rxns, mech_spc_dct_strpd_ich,
+                                    mech_spc_dct_strpd, rxn_param_dct)
+    print('algn_iso_sets_rxns:\n', algn_iso_sets_rxns)
+
+    # Combine (either add or average) rates for all stereo reactions
+    iso_sets_par_comb = get_comb_params(algn_iso_sets_rxns, temps_lst, pressures)
+    print('iso_sets_par_comb:\n', iso_sets_par_comb)
+
+    # Combine all iso_sets back into a single rxn_param_dct
+    rxn_param_dct_strpd = join_rxns(iso_sets_par_comb)
+    print('rxn_param_dct_strpd:\n', rxn_param_dct_strpd)
+
+    # Get rxn_param_dct with no stereoisomers
+    rxn_param_dct_no_ste = get_no_ste_rxns(rxn_param_dct, iso_sets_rxns)
+    print('rxn_param_dct_no_ste:\n', rxn_param_dct_no_ste)
+
+    # Create stereo-free mechanism names using the stereo-stripped inchis and
+    # rename all species in the mechanism with these names
+    re_mech_spc_dct, re_rxn_param_dct = regenerate_names(
+        mech_spc_dct_strpd_ich, rxn_param_dct_strpd)
+
+    print('re_rxn_param_dct:\n', re_rxn_param_dct)
+
+    # Reunite the non-stereo stuff with the newly stereo-stripped stuff
+    re_rxn_param_dct_comb, re_mech_spc_dct_comb = comb_strpd_and_no_ste(
+        re_mech_spc_dct, re_rxn_param_dct, mech_spc_dct_no_ste,
+        rxn_param_dct_no_ste)
+
+    return re_rxn_param_dct_comb, re_mech_spc_dct_comb
+
+
+def comb_strpd_and_no_ste(re_mech_spc_dct, re_rxn_param_dct,
+                          mech_spc_dct_no_ste, rxn_param_dct_no_ste):
+    """ Reunites the long-lost non-stereo stuff with the now-stereo-free stuff
+
+        :param re_mech_spc_dct: stereo-stripped spcs
+        :type re_mech_spc_dct: dict
+        :param re_rxn_param_dct: stereo-stripped reaction params
+        :type re_rxn_param_dct: dict
+        :param mech_spc_dct_no_ste: all non-stereo spcs, unchanged
+        :type mech_spc_dct_no_ste: dict
+        :param rxn_param_dct_no_ste: only reactions without stereoisomers
+        :type rxn_param_dct_no_ste: dict
+        :return mech_spc_dct_final: mech_spc_dct with all stereo stripped and
+            all non-stereo species added back in
+        :rtype: dict
+        :return mech_spc_dct_final: mech_spc_dct with all stereo stripped and
+            all non-stereo species added back in
+        :rtype: dict
+    """
+
+    # Deepcopy to prevent changes
+    mech_spc_dct_final = copy.deepcopy(re_mech_spc_dct)
+    rxn_param_dct_final = copy.deepcopy(re_rxn_param_dct)
+
+    # Combine dictionaries
+    mech_spc_dct_final.update(mech_spc_dct_no_ste)
+    rxn_param_dct_final.update(rxn_param_dct_no_ste)
+
+    return rxn_param_dct_final, mech_spc_dct_final
+
+
+def regenerate_names(mech_spc_dct_strpd_ich, rxn_param_dct_strpd_ich):
+    """ Regenerates mechanism names according to inchis, then renames inchis
+
+        :param mech_spc_dct_strpd_ich: dct with only stereo specific spcs,
+            but with stereo stripped from the inchis and inchis as spcs names
+        :type: dict
+        :param rxn_param_dct_strpd_ich: a normal rxn_param_dct, where the
+            stereo specificity has been removed (names in inchis)
+        :type: rxn_param_dct
+        :return re_mech_spc_dct: names converted back to mechanism version
+        :rtype: dict
+        :return re_rxn_param_dct: names converted back to mechanism version
+        :rtype: dict
+    """
+
+    map_dct = names.functional_group_name_dct(mech_spc_dct_strpd_ich,
+                                              force_rename=True)
+    re_mech_spc_dct, re_rxn_param_dct = names.remap_mechanism_names(
+        mech_spc_dct_strpd_ich, rxn_param_dct_strpd_ich, map_dct)
 
     return re_mech_spc_dct, re_rxn_param_dct
 
 
-# Step 8
-def join_rxns(iso_sets_par_avg):
+def join_rxns(iso_sets_par_comb):
     """ Takes iso_sets where each rxn has a single set of params and combines
         into a single rxn_param_dct
+
+        :param iso_sets_par_comb: list of rxn_param_dcts, one per iso_set,
+            where each rxn has a single, combined RxnParams object
+        :type: [{rxn1: params, ...}, {rxn1: params, ...}, ...]
+        :return rxn_param_dct_strpd_ich: a normal rxn_param_dct, where the
+            stereo specificity has been removed (names in inchis)
+        :rtype: rxn_param_dct
     """
 
-    rxn_param_dct_strpd = {}
-    for iso_set in iso_sets_par_avg:
+    rxn_param_dct_strpd_ich = {}
+    for iso_set in iso_sets_par_comb:
         for rxn, params in iso_set.items():
-            assert rxn not in rxn_param_dct_strpd, (
+            assert rxn not in rxn_param_dct_strpd_ich, (
                 f'The rxn {rxn} already exists!')
-            rxn_param_dct_strpd[rxn] = params
+            rxn_param_dct_strpd_ich[rxn] = params
 
-    return rxn_param_dct_strpd
+    return rxn_param_dct_strpd_ich
 
 
-# Step 7
-def get_avg_params(algn_iso_sets_rxns):
+def get_comb_params(algn_iso_sets_rxns, temps_lst, pressures):
+    """ For each aligned rxn_param_dct (one for each iso_set), combine the
+        RxnParams by averaging or adding the rate constants
 
-    iso_sets_par_avg = []
+        :param algn_iso_sets_rxns: list of aligned rxn_param_dcts, one for
+            each iso_set
+        :type: [{rxn1: [params1, params2, ...], ...},
+                {rxn1: [params1, params2, ...], ...}, ...]
+        :param temps_lst: temperatures at which to evaluate rates
+        :type temps_lst: [numpy.array, numpy.array, ...]
+        :param pressures: pressures at which to evaluate rates
+        :type pressures: list
+        :return iso_sets_par_comb: list of rxn_param_dcts, one per iso_set,
+            where each rxn has a single, combined RxnParams object
+        :rtype: [{rxn1: params, ...}, {rxn1: params, ...}, ...]
+    """
+
+    iso_sets_par_comb = []
     for iso_set in algn_iso_sets_rxns:
         new_iso_set = {}
-        for rxn, param_list in iso_set.items():
-            new_iso_set[rxn] = param_list[0]  # for now, just take first
-            #new_iso_set[rxn] = ???? # Need to use averaging function
-        iso_sets_par_avg.append(new_iso_set)
+        for rxn, params_lst in iso_set.items():
+            new_iso_set[rxn] = _combine_single_rxn(rxn, params_lst, temps_lst,
+                                                   pressures)
+        iso_sets_par_comb.append(new_iso_set)
 
-    return iso_sets_par_avg
+    return iso_sets_par_comb
 
 
-# Step 6
-def align_rxns(iso_sets_rxns_ich):
-    """ Align the dictionary
+def align_rxns(iso_sets_rxns, mech_spc_dct_strpd_ich,
+               mech_spc_dct_strpd, rxn_param_dct):
+    """ Renames all stereo species to inchis and aligns RxnParams under
+        singular reaction names
 
-        NOTE: assumes that all reactions that should go together are written
-        in the same direction! Prints a warning if exceptions are found
+        Note to self: this function has the most complicated logic; errors
+            are likely to originate here
+
+        :param iso_sets_rxns: rxn_params_dcts for each isomer in each iso_set
+        :type: [[rxn_param_dict_iso1, rxn_param_dct_iso2, ...],
+        :param mech_spc_dct_strpd_ich: dct with only stereo specific spcs,
+            but with stereo stripped from the inchis and inchis as spcs names
+        :type: dict
+        :param mech_spc_dct_strpd: dct with only stereo specific spcs, but
+            with stereo stripped from the inchis
+        :type mech_spc_dct_strpd: dict
+        :param rxn_param_dct: keys are rxns, values are RxnParams
+        :type rxn_param_dct: dict
+        :return algn_iso_sets_rxns: list of aligned rxn_param_dcts, one for
+            each iso_set
+        :rtype: [{rxn1: [params1, params2, ...], ...},
+                 {rxn1: [params1, params2, ...], ...}, ...]
     """
 
-    algn_iso_sets_rxns = []
-    for iso_set_rxns in iso_sets_rxns_ich:
-        algn_iso_set_rxns = compare.align_dcts(iso_set_rxns)
-        algn_iso_sets_rxns.append(algn_iso_set_rxns)
+    # Get the rename instructions
+    rename_instr = compare.get_rename_instr(mech_spc_dct_strpd_ich,
+                                            mech_spc_dct_strpd)
 
-    # Check to see if any reactions match
-    algn_rxns = algn_iso_sets_rxns
-    for iso_set in algn_iso_sets_rxns:
-        iso_set_copy = copy.deepcopy(iso_set)
-        for rxn in iso_set.keys():
-            iso_set_copy.pop(rxn)  # remove current rxn so no false matches
-            matching_rxn, rev_rate = compare.assess_rxn_match(
-                rxn, iso_set_copy)
-            if matching_rxn:
-                print('matching rxn found where it should not be!')
+    # Loop over each iso_set and rename all the rxns
+    algn_iso_sets_rxns = []
+    all_rxns = []
+    print('inside new align_rxns')
+    for iso_set_rxns in iso_sets_rxns:
+        print('iso_set_rxns:\n', iso_set_rxns)
+        algn_iso_set_rxns = {}
+        for iso_rxns in iso_set_rxns:
+            print('iso_rxns:\n', iso_rxns)
+            renamed_dct, ste_dct = compare.rename_species(iso_rxns, rename_instr)
+            print('ste_dct:\n', ste_dct)
+            # Loop over the ste_dct first; this catches reactions that have
+            # duplicates *within the current iso_rxns*
+            for new_rxn, old_rxns in ste_dct.items():
+                print('new_rxn:\n', new_rxn)
+                params_lst = [rxn_param_dct[old_rxn] for old_rxn in old_rxns]
+                # If new rxn already in current aligned dct, extend params
+                if new_rxn in algn_iso_set_rxns:
+                    algn_iso_set_rxns[new_rxn].extend(params_lst)
+                # If new rxn not in current aligned dct, create w/params
+                else:
+                    algn_iso_set_rxns[new_rxn] = params_lst
+            # Loop over the renamed dct; this catches reactions that do not
+            # have duplicates *within the current iso_rxns*
+            for new_rxn, params in renamed_dct.items():
+                if new_rxn not in ste_dct:  # only do if rxn not in ste_dct
+                    if new_rxn in algn_iso_set_rxns:
+                        algn_iso_set_rxns[new_rxn].append(params)
+                    else:
+                        algn_iso_set_rxns[new_rxn] = [params]
+        # If any of the reactions in the current aligned_dct showed up in any
+        # previous iso_sets, delete the reaction in the current aligned_dct
+        for new_rxn in copy.deepcopy(algn_iso_set_rxns).keys():
+            if new_rxn in all_rxns:
+                algn_iso_set_rxns.pop(new_rxn)  # remove
+            else:
+                all_rxns.append(new_rxn)  # add to list of existing rxns
+        # Store the current aligned_dct
+        algn_iso_sets_rxns.append(algn_iso_set_rxns)
 
     return algn_iso_sets_rxns
 
 
-# Step 5
-def rename_iso_sets_rxns(iso_sets_rxns, mech_spc_dct_strpd_ich,
-                         mech_spc_dct_strpd):
-    """ Renames all isomers according to their (stereo-stripped) inchis
-    """
-
-    # Get the rename instructions
-    rename_instr = compare.get_rename_instr_v2(mech_spc_dct_strpd_ich,
-                                               mech_spc_dct_strpd)
-    # Rename each set of iso_rxns
-    iso_sets_rxns_ich = []
-    for iso_set_rxns in iso_sets_rxns:
-        iso_set_rxns_ich = []
-        for iso_rxns in iso_set_rxns:
-            # Rename all reactions containing this species and store
-            iso_rxns_ich, _ = compare.rename_species(iso_rxns, rename_instr)
-            #print('iso_rxns_ich, in loop:\n', iso_rxns_ich)
-            iso_set_rxns_ich.append(iso_rxns_ich)
-        iso_sets_rxns_ich.append(iso_set_rxns_ich)
-
-    return iso_sets_rxns_ich
-
-
-# Step 4b
 def get_no_ste_rxns(rxn_param_dct, iso_sets_rxns):
     """ Gets a rxn_param_dct with all reactions that have no stereoisomers
+
+        :param rxn_param_dct: keys are rxns, values are RxnParams
+        :type rxn_param_dct: dict
+        :param iso_sets_rxns: rxn_params_dcts for each isomer in each iso_set
+        :type: [[rxn_param_dict_iso1, rxn_param_dct_iso2, ...],
+            [rxn_param_dict_iso1, rxn_param_dct_iso2, ...], ...]
+        :return rxn_param_dct_no_ste: only reactions without stereoisomers
+        :rtype: dict
     """
 
     # Get list of all rxns involving stereoisomers
@@ -135,10 +287,17 @@ def get_no_ste_rxns(rxn_param_dct, iso_sets_rxns):
     return rxn_param_dct_no_ste
 
 
-# Step 4
 def get_ste_rxns(rxn_param_dct, iso_sets):
     """ For each isomer, gets a rxn param dct with all rxns containing that
         isomer
+
+        :param rxn_param_dct: keys are rxns, values are RxnParams
+        :type rxn_param_dct: dict
+        :param iso_sets: list of all sets of stereoisomers
+        :type iso_sets: [[iso1, iso2, ...], [iso1, iso2, ...], ...]
+        :return iso_sets_rxns: rxn_params_dcts for each isomer in each iso_set
+        :rtype: [[rxn_param_dict_iso1, rxn_param_dct_iso2, ...],
+            [rxn_param_dict_iso1, rxn_param_dct_iso2, ...], ...]
     """
     def search_rxns(rxn_param_dct, spc):
         """ Searches a rxn_param_dct for all rxns that contain a species
@@ -158,18 +317,24 @@ def get_ste_rxns(rxn_param_dct, iso_sets):
         for iso in iso_set:
             # Get all rxns that contain this isomer and store
             iso_rxn_params = search_rxns(rxn_param_dct, iso)
-         #   print('iso_rxn_params, in loop:\n', iso_rxn_params)
             iso_set_rxns.append(iso_rxn_params)
         iso_sets_rxns.append(iso_set_rxns)
-        #print('iso_sets_rxns, in loop:\n', iso_sets_rxns)
 
     return iso_sets_rxns
 
 
-# Step 3
 def make_mech_spc_dct_ich(iso_sets, mech_spc_dct_strpd):
     """ Renames a mech_spc_dct_strpd (i.e., all stereo stripped) to have the
         species names be inchis
+
+        :param iso_sets: list of all sets of stereoisomers
+        :type iso_sets: [[iso1, iso2, ...], [iso1, iso2, ...], ...]
+        :param mech_spc_dct_strpd: dct with only stereo specific spcs, but
+            with stereo stripped from the inchis
+        :type mech_spc_dct_strpd: dict
+        :return mech_spc_dct_strpd_ich: dct with only stereo specific spcs,
+            but with stereo stripped from the inchis and inchis as spcs names
+        :rtype: dict
     """
 
     mech_spc_dct_strpd_ich = {}
@@ -182,20 +347,25 @@ def make_mech_spc_dct_ich(iso_sets, mech_spc_dct_strpd):
     return mech_spc_dct_strpd_ich
 
 
-# Step 2
-def find_iso_sets(mech_spc_dct_strpd):
+def find_iso_sets(mech_spc_dct_strpd, canon_ent=False):
     """ Finds all sets of isomers in a stripped mech_spc_dct that are now the
         exact same species (since stereo has been stripped)
 
+        :param mech_spc_dct_strpd: dct with only stereo specific spcs, but
+            with stereo stripped from the inchis
+        :type mech_spc_dct_strpd: dict
         :return iso_sets: list of all sets of stereoisomers
-        :type iso_sets: [[iso1, iso2, ...], [iso1, iso2, ...], ...]
+        :rtype: [[iso1, iso2, ...], [iso1, iso2, ...], ...]
     """
 
     # Get two things: (i) species and (ii) inchis
     spcs = tuple(mech_spc_dct_strpd.keys())
     ichs = ()
     for spc_dct in mech_spc_dct_strpd.values():
-        ichs += (spc_dct['inchi'],)
+        if canon_ent:
+            ichs += (spc_dct['canon_enant_ich'],)
+        else:
+            ichs += (spc_dct['inchi'],)
 
     # Get stereo sets, which are sets of species that are the same if one
     # ignores stereo (usually will be singles or doubles)
@@ -221,7 +391,7 @@ def find_iso_sets(mech_spc_dct_strpd):
                 ref_spc_dct = mech_spc_dct_strpd[iso]
             else:  # if on later isos, check against reference
                 spc_dct = mech_spc_dct_strpd[iso]
-                same = are_spc_dcts_same(ref_spc_dct, spc_dct)
+                same = _are_spc_dcts_same(ref_spc_dct, spc_dct)
                 assert same, (f'In the set of stereoisomes {iso_set}, the '
                                'species dcts are not the same (even after '
                                'stripping stereo)')
@@ -229,8 +399,7 @@ def find_iso_sets(mech_spc_dct_strpd):
     return iso_sets
 
 
-# Step 1
-def strip_mech_spc_dct(mech_spc_dct):
+def strip_mech_spc_dct(mech_spc_dct, canon_ent=False):
     """ Removes stereochemistry from all species in a mech_spc_dct. Returns
         a new mech_spc_dct with all the stereo-specific species, but now
         stripped of the stereo. Also returns a separate mech_spc_dct of
@@ -240,34 +409,42 @@ def strip_mech_spc_dct(mech_spc_dct):
         :type mech_spc_dct: dict
         :return mech_spc_dct_strpd: dct with only stereo specific spcs, but
             with stereo stripped from the inchis
-        :type mech_spc_dct_strpd: dict
-        :return mech_spc_dct_no_ste: dct with all non-stereo spcs, unchanged
-        :type mech_spc_dct_no_ste: dict
+        :rtype: dict
+        :return mech_spc_dct_no_ste: all non-stereo spcs, unchanged
+        :rtype: dict
     """
 
     mech_spc_dct_strpd = {}
     mech_spc_dct_no_ste = {}
     for spc, spc_dct in mech_spc_dct.items():
-        orig_ich = copy.copy(spc_dct['inchi'])
-        strpd_ich = inchi.without_stereo(orig_ich)
+        if canon_ent:
+            orig_ich = copy.copy(spc_dct['canon_enant_ich'])
+        else:
+            orig_ich = copy.copy(spc_dct['inchi'])
+        print('orig_ich: ', orig_ich)
+        strpd_ich = chi.without_stereo(orig_ich)
+        #try:
+            #strpd_ich = inchi.without_stereo(orig_ich)
+        #except:
+            #print('spc: ', spc)
         # If the species is stereo-free, save in the no_ste dct
         if orig_ich == strpd_ich:
             mech_spc_dct_no_ste[spc] = spc_dct
         # If the species had stereo, save stereo-stripped info in strpd dct
         else:
             # Get the smiles and inchikey without stereo
-            strpd_smi = inchi.smiles(strpd_ich)
-            strpd_ichkey = inchi.inchi_key(strpd_ich)
+            strpd_smi = chi.smiles(strpd_ich)
+            strpd_ichkey = chi.inchi_key(strpd_ich)
             # Store the stereo-stripped information
-            spc_dct['smiles'] = strpd_smi
-            spc_dct['inchikey'] = strpd_ichkey
+            #spc_dct['smiles'] = strpd_smi
+            #spc_dct['inchikey'] = strpd_ichkey
             spc_dct['inchi'] = strpd_ich
             mech_spc_dct_strpd[spc] = spc_dct
 
     return mech_spc_dct_strpd, mech_spc_dct_no_ste
 
 
-def are_spc_dcts_same(spc_dct1, spc_dct2):
+def _are_spc_dcts_same(spc_dct1, spc_dct2):
     """ Checks if two spc dcts are the same
     """
 
@@ -282,33 +459,76 @@ def are_spc_dcts_same(spc_dct1, spc_dct2):
     return same
 
 
-def combine_params(params_lst, temps_lst, pressures, method='avg'):
+def _combine_single_rxn(rxn, params_lst, temps_lst, pressures):
     """ Takes a list of rate parameters, calculates the k(T,P) values, either
         averages or adds them, and then refits them
     """
 
-    # Catch for when no params are given
-    if len(params_lst) == 0:
+    if len(params_lst) == 0:  # if none are given
         return None
 
     # Calculate rates for each params in the list
     ktp_dct_lst = []
     for params in params_lst:
-        ktp_dct = rates.eval_params(params, temps_lst, pressures)
-        ktp_dct_lst.append(ktp_dct)
+        if params is not None:
+            # Get rates
+            ktp_dct = rates.eval_params(params, temps_lst, pressures)
+            ktp_dct_lst.append(ktp_dct)
+            # Get fit form (used later)
+            fit_method = params.get_existing_forms()[0]  # first one
 
-    # Average rate constants
+    # Combine rate constants
+    comb_ktp_dct = _sum_ktp_list(ktp_dct_lst)  # first step: add all the rates
+    # If there are two stereo rxns, check if the rates should be averaged
+    if len(params_lst) == 2:
+        should_avg = _should_avg(rxn)  # depends on where stereo spc is
+        if should_avg:
+            comb_ktp_dct = rates.mult_by_factor(comb_ktp_dct, 0.5)
+    # If there are four stereo rxns, divide rates by two; this is the same as
+    # averaging two sets of two and then adding. The exact averaging
+    elif len(params_lst) == 4:
+        comb_ktp_dct = rates.mult_by_factor(comb_ktp_dct, 0.5)
+
+    # Fit the averaged rate constants
+    comb_params, _ = fit.fit_ktp_dct(comb_ktp_dct, fit_method)
+
+    return comb_params
+
+
+def _should_avg(rxn_ich):
+    """ Determines if rate constants should be averaged; this should be done
+        if the stereo species is in the products
+
+        :param rxn_ich: description of a reaction, where any stereo species
+            are described using their (stereo-stripped) inchis
+        :type rxn_ich: ((rct1, rct2, ...), (prd1, prd2, ...), ...)
+        :return should_avg: whether the rate constants should be averaged
+        :rtype: Bool
+    """
+
+    should_avg = False
+    _, prds, _ = rxn_ich
+    # If the stereo spc is in the products, average the rates
+    for prd in prds:
+        if 'ChI' in prd:
+            should_avg = True
+
+    return should_avg
+
+
+def _sum_ktp_list(ktp_dct_lst):
+    """ Sums all ktp_dcts in a list
+
+        :param ktp_dct_list: list of ktp_dcts
+        :type ktp_dct_list: list
+        :return summed_ktp_dct: summed ktp_dct
+        :rtype: dict
+    """
+
     for idx, ktp_dct in enumerate(ktp_dct_lst):
         if idx == 0:
             summed_ktp_dct = copy.deepcopy(ktp_dct)
         else:
             summed_ktp_dct = rates.add_ktp_dcts(summed_ktp_dct, ktp_dct)
-    factor = 1 / len(params_lst)
-    avg_ktp_dct = rates.mult_by_factor(summed_ktp_dct, factor)
 
-    # Fit the averaged rate constants
-    fit_methods = params_lst[0].get_existing_forms()
-    fit_method = fit_methods[0]
-    avg_params, _ = fit.fit_ktp_dct(avg_ktp_dct, fit_method)
-
-    return avg_params
+    return summed_ktp_dct
